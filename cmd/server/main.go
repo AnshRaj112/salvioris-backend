@@ -23,6 +23,18 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// Initialize Cloudinary service
+	if cfg.CloudinaryName != "" && cfg.CloudinaryAPIKey != "" && cfg.CloudinaryAPISecret != "" {
+		if err := handlers.InitCloudinaryService(cfg); err != nil {
+			log.Printf("Warning: Failed to initialize Cloudinary: %v", err)
+			log.Println("File uploads will not be available")
+		} else {
+			log.Println("✅ Cloudinary service initialized")
+		}
+	} else {
+		log.Println("Warning: Cloudinary credentials not found. File uploads will not be available")
+	}
+
 	// Log connection attempt (without showing password)
 	log.Printf("Connecting to MongoDB...")
 	if cfg.MongoURI != "" {

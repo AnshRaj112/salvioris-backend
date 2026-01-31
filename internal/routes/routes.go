@@ -15,5 +15,8 @@ func SetupRoutes(r *chi.Mux) {
 	// Therapist status routes
 	r.Get("/api/therapist/status", handlers.CheckTherapistStatus)
 	r.Get("/api/therapist", handlers.GetTherapistByID)
+	
+	// File upload routes
+	r.Post("/api/upload", handlers.UploadFile)
 }
 

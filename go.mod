@@ -3,6 +3,7 @@ module github.com/AnshRaj112/serenify-backend
 go 1.25
 
 require (
+	github.com/cloudinary/cloudinary-go/v2 v2.7.0
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-chi/cors v1.2.1
 	github.com/joho/godotenv v1.5.1
