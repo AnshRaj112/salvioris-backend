@@ -18,5 +18,11 @@ func SetupRoutes(r *chi.Mux) {
 	
 	// File upload routes
 	r.Post("/api/upload", handlers.UploadFile)
+	
+	// Admin routes
+	r.Get("/api/admin/therapists/pending", handlers.GetPendingTherapists)
+	r.Get("/api/admin/therapists/approved", handlers.GetApprovedTherapists)
+	r.Put("/api/admin/therapists/approve", handlers.ApproveTherapist)
+	r.Delete("/api/admin/therapists/reject", handlers.RejectTherapist)
 }
 

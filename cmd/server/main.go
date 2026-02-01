@@ -9,6 +9,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/config"
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/internal/handlers"
 	"github.com/AnshRaj112/serenify-backend/internal/routes"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -85,6 +86,21 @@ func main() {
 
 	// Setup routes
 	routes.SetupRoutes(r)
+
+	// Log registered routes for debugging
+	log.Println("📋 Registered routes:")
+	log.Println("  GET  /health")
+	log.Println("  POST /api/auth/user/signup")
+	log.Println("  POST /api/auth/user/signin")
+	log.Println("  POST /api/auth/therapist/signup")
+	log.Println("  POST /api/auth/therapist/signin")
+	log.Println("  GET  /api/therapist/status")
+	log.Println("  GET  /api/therapist")
+	log.Println("  POST /api/upload")
+	log.Println("  GET  /api/admin/therapists/pending")
+	log.Println("  GET  /api/admin/therapists/approved")
+	log.Println("  PUT  /api/admin/therapists/approve")
+	log.Println("  DELETE /api/admin/therapists/reject")
 
 	log.Printf("🚀 Serenify backend running on :%s", cfg.Port)
 	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
