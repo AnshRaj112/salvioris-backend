@@ -24,5 +24,9 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/admin/therapists/approved", handlers.GetApprovedTherapists)
 	r.Put("/api/admin/therapists/approve", handlers.ApproveTherapist)
 	r.Delete("/api/admin/therapists/reject", handlers.RejectTherapist)
+	
+	// Vent routes
+	r.Post("/api/vent", handlers.CreateVent)
+	r.Get("/api/vent", handlers.GetVents)
 }
 

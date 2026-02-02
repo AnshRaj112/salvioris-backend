@@ -101,6 +101,8 @@ func main() {
 	log.Println("  GET  /api/admin/therapists/approved")
 	log.Println("  PUT  /api/admin/therapists/approve")
 	log.Println("  DELETE /api/admin/therapists/reject")
+	log.Println("  POST /api/vent")
+	log.Println("  GET  /api/vent")
 
 	log.Printf("🚀 Serenify backend running on :%s", cfg.Port)
 	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
