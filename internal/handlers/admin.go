@@ -8,6 +8,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -192,5 +193,155 @@ func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 		"therapists": therapistList,
 		"count":      len(therapistList),
 	})
+}
+
+// GetViolations returns all content violations
+func GetViolations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Find all violations, sorted by most recent
+	cursor, err := database.DB.Collection("violations").Find(ctx, bson.M{}, options.Find().SetSort(bson.M{"created_at": -1}).SetLimit(100))
+	if err != nil {
+		http.Error(w, "Failed to fetch violations: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var violations []models.Violation
+	if err = cursor.All(ctx, &violations); err != nil {
+		http.Error(w, "Failed to decode violations: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to response format
+	violationList := make([]map[string]interface{}, len(violations))
+	for i, violation := range violations {
+		violationMap := map[string]interface{}{
+			"id":           violation.ID.Hex(),
+			"created_at":   violation.CreatedAt,
+			"ip_address":   violation.IPAddress,
+			"type":         violation.Type,
+			"message":      violation.Message,
+			"vent_id":      violation.VentID,
+			"action_taken": violation.ActionTaken,
+		}
+		if violation.UserID != nil {
+			violationMap["user_id"] = violation.UserID.Hex()
+		}
+		violationList[i] = violationMap
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"violations": violationList,
+		"count":      len(violationList),
+	})
+}
+
+// GetBlockedIPs returns all currently blocked IP addresses
+func GetBlockedIPs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Find all active blocked IPs
+	cursor, err := database.DB.Collection("blocked_ips").Find(ctx, bson.M{
+		"is_active": true,
+		"expires_at": bson.M{"$gt": time.Now()},
+	}, options.Find().SetSort(bson.M{"created_at": -1}))
+	if err != nil {
+		http.Error(w, "Failed to fetch blocked IPs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var blockedIPs []models.BlockedIP
+	if err = cursor.All(ctx, &blockedIPs); err != nil {
+		http.Error(w, "Failed to decode blocked IPs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to response format
+	blockedList := make([]map[string]interface{}, len(blockedIPs))
+	for i, blocked := range blockedIPs {
+		blockedList[i] = map[string]interface{}{
+			"id":         blocked.ID.Hex(),
+			"ip_address": blocked.IPAddress,
+			"reason":     blocked.Reason,
+			"created_at": blocked.CreatedAt,
+			"expires_at": blocked.ExpiresAt,
+			"is_active":  blocked.IsActive,
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"blocked_ips": blockedList,
+		"count":       len(blockedList),
+	})
+}
+
+// UnblockIP unblocks an IP address
+func UnblockIP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	ipAddress := r.URL.Query().Get("ip")
+	if ipAddress == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "IP address is required",
+		})
+		return
+	}
+
+	// Check if IP is actually blocked before unblocking
+	isBlocked, blockedIP, err := services.IsIPBlocked(ipAddress)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to check block status: " + err.Error(),
+		})
+		return
+	}
+
+	if !isBlocked {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "IP address is not currently blocked",
+		})
+		return
+	}
+
+	// Unblock the IP
+	err = services.UnblockIP(ipAddress)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to unblock IP: " + err.Error(),
+		})
+		return
+	}
+
+	// Return success with details
+	response := map[string]interface{}{
+		"success": true,
+		"message": "IP address unblocked successfully",
+		"ip_address": ipAddress,
+	}
+	
+	if blockedIP != nil {
+		response["previous_reason"] = blockedIP.Reason
+		response["was_blocked_until"] = blockedIP.ExpiresAt
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -22,9 +23,12 @@ type CreateVentRequest struct {
 
 // CreateVentResponse represents the response after creating a vent
 type CreateVentResponse struct {
-	Success bool                   `json:"success"`
-	Message string                 `json:"message"`
-	Vent    map[string]interface{} `json:"vent,omitempty"`
+	Success      bool                   `json:"success"`
+	Message      string                 `json:"message"`
+	Vent         map[string]interface{} `json:"vent,omitempty"`
+	Warning      bool                   `json:"warning,omitempty"`
+	Blocked      bool                   `json:"blocked,omitempty"`
+	WarningCount int                    `json:"warning_count,omitempty"`
 }
 
 // GetVentsResponse represents the response for getting vents
@@ -39,7 +43,9 @@ type GetVentsResponse struct {
 // CreateVent handles creating a new vent message
 func CreateVent(w http.ResponseWriter, r *http.Request) {
 	var req CreateVentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var err error
+	
+	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(CreateVentResponse{
@@ -60,10 +66,123 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get IP address
+	ipAddress := services.GetIPAddress(r)
+
+	// Check if IP is blocked
+	var isBlocked bool
+	isBlocked, _, err = services.IsIPBlocked(ipAddress)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(CreateVentResponse{
+			Success: false,
+			Message: "Error checking access",
+		})
+		return
+	}
+	if isBlocked {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(CreateVentResponse{
+			Success: false,
+			Blocked: true,
+			Message: "Your access has been temporarily restricted due to policy violations. Please contact support if you believe this is an error.",
+		})
+		return
+	}
+
+	// Check content for threats and self-harm
+	hasThreat, hasSelfHarm, _ := services.CheckContent(req.Message)
+	
+	var userObjectID *primitive.ObjectID
+	if req.UserID != "" {
+		parsedID, parseErr := primitive.ObjectIDFromHex(req.UserID)
+		if parseErr == nil {
+			userObjectID = &parsedID
+		}
+	}
+
+	// Record violation if detected
+	if hasThreat || hasSelfHarm {
+		violationType := models.ViolationTypeThreat
+		if hasSelfHarm {
+			violationType = models.ViolationTypeSelfHarm
+		}
+
+		// Get violation count
+		var violationCount int64
+		violationCount, err = services.GetViolationCount(ipAddress)
+		if err != nil {
+			violationCount = 0
+		}
+
+		// Record the violation
+		_ = services.RecordViolation(userObjectID, ipAddress, violationType, req.Message, "", "warning")
+
+		// If this is the 3rd violation (after 2 warnings), block the IP
+		if violationCount >= 2 {
+			// Block IP for 7 days
+			reason := "Multiple content policy violations"
+			if hasThreat {
+				reason = "Threats against others detected"
+			} else if hasSelfHarm {
+				reason = "Self-harm content detected"
+			}
+			_ = services.BlockIP(ipAddress, reason, 7)
+			
+			// Record violation with blocked action
+			_ = services.RecordViolation(userObjectID, ipAddress, violationType, req.Message, "", "blocked")
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(CreateVentResponse{
+				Success: false,
+				Blocked: true,
+				Message: "Your message contains content that violates our policies. Your access has been temporarily restricted. If you need help, please contact support.",
+			})
+			return
+		}
+
+		// First or second violation - return warning
+		warningMsg := "Your message contains content that may violate our community guidelines. "
+		if hasThreat {
+			warningMsg += "Threats against others are not permitted. "
+		}
+		if hasSelfHarm {
+			warningMsg += "If you're experiencing thoughts of self-harm, please reach out to a mental health professional or crisis hotline. "
+		}
+		warningMsg += "Continued violations may result in temporary access restrictions."
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(CreateVentResponse{
+			Success:      false,
+			Warning:      true,
+			WarningCount: int(violationCount + 1),
+			Message:      warningMsg,
+		})
+		return
+	}
+
+	// Only save to database if user is logged in
+	// Guest messages pass moderation but are not saved (handled on frontend)
+	if req.UserID == "" {
+		// Guest message - moderation passed, return success but don't save
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(CreateVentResponse{
+			Success: true,
+			Message: "Message validated successfully",
+			// No vent returned for guests - they handle storage locally
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Create vent
+	// Create vent for logged-in user
 	vent := models.Vent{
 		ID:        primitive.NewObjectID(),
 		CreatedAt: time.Now(),
@@ -71,16 +190,14 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 		Message:   req.Message,
 	}
 
-	// Set user ID if provided
-	if req.UserID != "" {
-		userObjectID, err := primitive.ObjectIDFromHex(req.UserID)
-		if err == nil {
-			vent.UserID = &userObjectID
-		}
+	// Set user ID (we know it's not empty here)
+	parsedID, parseErr := primitive.ObjectIDFromHex(req.UserID)
+	if parseErr == nil {
+		vent.UserID = &parsedID
 	}
 
 	// Insert vent into database
-	_, err := database.DB.Collection("vents").InsertOne(ctx, vent)
+	_, err = database.DB.Collection("vents").InsertOne(ctx, vent)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

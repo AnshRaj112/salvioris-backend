@@ -11,6 +11,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/handlers"
 	"github.com/AnshRaj112/serenify-backend/internal/routes"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 )
@@ -64,6 +65,12 @@ func main() {
 		log.Println("See MONGODB_SETUP.md for detailed instructions")
 	}
 	defer database.Disconnect()
+
+	// Start violation cleanup service
+	// Cleans up violations older than 6 hours, runs every hour
+	// Note: This does NOT delete blocked IPs - those are kept separately
+	services.StartViolationCleanup(1, 6) // Run every 1 hour, delete violations older than 6 hours
+	log.Println("✅ Violation cleanup service started (removes violations older than 6 hours)")
 
 	// Setup router
 	r := chi.NewRouter()
