@@ -31,5 +31,9 @@ func SetupRoutes(r *chi.Mux) {
 	// Vent routes
 	r.Post("/api/vent", handlers.CreateVent)
 	r.Get("/api/vent", handlers.GetVents)
+	
+	// Feedback routes
+	r.Post("/api/feedback", handlers.SubmitFeedback)
+	r.Get("/api/admin/feedbacks", handlers.GetFeedbacks)
 }
 
