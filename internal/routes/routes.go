@@ -43,5 +43,9 @@ func SetupRoutes(r *chi.Mux) {
 	// Feedback routes
 	r.Post("/api/feedback", handlers.SubmitFeedback)
 	r.Get("/api/admin/feedbacks", handlers.GetFeedbacks)
+	
+	// Contact us routes
+	r.Post("/api/contact", handlers.SubmitContact)
+	r.Get("/api/admin/contacts", handlers.GetContacts)
 }
 

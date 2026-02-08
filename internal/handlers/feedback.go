@@ -1,17 +1,14 @@
 package handlers
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/google/uuid"
 )
 
 // SubmitFeedbackRequest represents the request to submit feedback
@@ -69,22 +66,14 @@ func SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// Get IP address (for analytics, not personal info)
 	ipAddress := services.GetIPAddress(r)
 
-	// Create feedback
-	feedback := models.Feedback{
-		ID:        primitive.NewObjectID(),
-		CreatedAt: time.Now(),
-		Feedback:  req.Feedback,
-		IPAddress: ipAddress,
-	}
-
-	// Insert feedback into database
-	_, err = database.DB.Collection("feedbacks").InsertOne(ctx, feedback)
+	// Insert feedback into PostgreSQL database
+	_, err = database.PostgresDB.Exec(`
+		INSERT INTO feedbacks (id, created_at, feedback, ip_address)
+		VALUES ($1, $2, $3, $4)
+	`, uuid.New(), time.Now(), req.Feedback, ipAddress)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -105,11 +94,9 @@ func SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 
 // GetFeedbacks handles getting all feedbacks (admin only)
 func GetFeedbacks(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// Count total feedbacks
-	total, err := database.DB.Collection("feedbacks").CountDocuments(ctx, bson.M{})
+	var total int64
+	err := database.PostgresDB.QueryRow("SELECT COUNT(*) FROM feedbacks").Scan(&total)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -122,11 +109,12 @@ func GetFeedbacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find all feedbacks (sorted by created_at descending - newest first)
-	findOptions := options.Find()
-	findOptions.SetSort(bson.M{"created_at": -1}) // Descending order
-
-	cursor, err := database.DB.Collection("feedbacks").Find(ctx, bson.M{}, findOptions)
+	// Query all feedbacks (sorted by created_at descending - newest first)
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, created_at, feedback, ip_address
+		FROM feedbacks
+		ORDER BY created_at DESC
+	`)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -138,31 +126,35 @@ func GetFeedbacks(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer cursor.Close(ctx)
-
-	var feedbacks []models.Feedback
-	if err = cursor.All(ctx, &feedbacks); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(GetFeedbacksResponse{
-			Success:   false,
-			Message:   "Failed to fetch feedbacks",
-			Feedbacks: []map[string]interface{}{},
-			Total:     0,
-		})
-		return
-	}
+	defer rows.Close()
 
 	// Convert to response format
-	feedbackMaps := make([]map[string]interface{}, 0, len(feedbacks))
-	for _, feedback := range feedbacks {
-		feedbackMap := map[string]interface{}{
-			"id":         feedback.ID.Hex(),
-			"feedback":   feedback.Feedback,
-			"created_at": feedback.CreatedAt,
+	feedbackMaps := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id string
+		var createdAt time.Time
+		var feedback string
+		var ipAddress sql.NullString
+
+		if err := rows.Scan(&id, &createdAt, &feedback, &ipAddress); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(GetFeedbacksResponse{
+				Success:   false,
+				Message:   "Failed to scan feedbacks",
+				Feedbacks: []map[string]interface{}{},
+				Total:     0,
+			})
+			return
 		}
-		if feedback.IPAddress != "" {
-			feedbackMap["ip_address"] = feedback.IPAddress
+
+		feedbackMap := map[string]interface{}{
+			"id":         id,
+			"feedback":   feedback,
+			"created_at": createdAt,
+		}
+		if ipAddress.Valid {
+			feedbackMap["ip_address"] = ipAddress.String
 		}
 		feedbackMaps = append(feedbackMaps, feedbackMap)
 	}

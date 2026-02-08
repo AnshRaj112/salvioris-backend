@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/google/uuid"
 )
 
@@ -62,6 +63,16 @@ func GetTherapistByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to get from cache
+	cacheKey := services.CacheKey("therapist", id)
+	var cachedTherapist map[string]interface{}
+	if found, err := services.Cache.Get(cacheKey, &cachedTherapist); err == nil && found {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		json.NewEncoder(w).Encode(cachedTherapist)
+		return
+	}
+
 	var therapistID, name, email, licenseNumber, licenseState, phone sql.NullString
 	var collegeDegree, mastersInstitution, psychologistType, dsmAwareness, therapyTypes sql.NullString
 	var specialization, certificateImagePath, degreeImagePath sql.NullString
@@ -109,7 +120,11 @@ func GetTherapistByID(w http.ResponseWriter, r *http.Request) {
 		"is_approved":          isApproved,
 	}
 
+	// Cache the response
+	services.Cache.Set(cacheKey, therapistMap)
+
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
 	json.NewEncoder(w).Encode(therapistMap)
 }
 

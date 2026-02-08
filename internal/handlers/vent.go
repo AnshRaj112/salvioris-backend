@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -257,6 +258,18 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build cache key
+	cacheKey := services.CacheKey("vents", fmt.Sprintf("%s:%d:%d", userID, limit, skip))
+	
+	// Try to get from cache
+	var cachedResponse GetVentsResponse
+	if found, err := services.Cache.Get(cacheKey, &cachedResponse); err == nil && found {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		json.NewEncoder(w).Encode(cachedResponse)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -353,12 +366,21 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 	// Check if there are more vents
 	hasMore := int64(skip+limit) < total
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(GetVentsResponse{
+	response := GetVentsResponse{
 		Success: true,
 		Vents:   ventMaps,
 		HasMore: hasMore,
 		Total:   total,
-	})
+	}
+
+	// Cache the response (only cache if no user filter or if it's a common query)
+	// Don't cache user-specific queries as they change frequently
+	if userID == "" {
+		services.Cache.Set(cacheKey, response)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	json.NewEncoder(w).Encode(response)
 }
 

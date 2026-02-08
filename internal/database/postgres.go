@@ -129,6 +129,24 @@ func InitPostgresTables() error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		
+		// Feedbacks table
+		`CREATE TABLE IF NOT EXISTS feedbacks (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			feedback TEXT NOT NULL,
+			ip_address VARCHAR(255)
+		)`,
+		
+		// Contact us table
+		`CREATE TABLE IF NOT EXISTS contact_us (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			name VARCHAR(255) NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			message TEXT NOT NULL,
+			ip_address VARCHAR(255)
+		)`,
+		
 		// Create indexes for better performance
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
@@ -143,6 +161,9 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token)`,
 		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires_at ON password_reset_tokens(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_feedbacks_created_at ON feedbacks(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_us_created_at ON contact_us(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_us_email ON contact_us(email)`,
 	}
 
 	for _, query := range queries {

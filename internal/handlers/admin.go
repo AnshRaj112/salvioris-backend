@@ -165,6 +165,16 @@ func RejectTherapist(w http.ResponseWriter, r *http.Request) {
 
 // GetApprovedTherapists returns all approved therapists
 func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
+	// Try to get from cache
+	cacheKey := services.CacheKey("therapists", "approved")
+	var cachedResponse map[string]interface{}
+	if found, err := services.Cache.Get(cacheKey, &cachedResponse); err == nil && found {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		json.NewEncoder(w).Encode(cachedResponse)
+		return
+	}
+
 	rows, err := database.PostgresDB.Query(`
 		SELECT id, created_at, name, email, license_number, license_state,
 			years_of_experience, specialization, phone, college_degree, masters_institution,
@@ -219,12 +229,18 @@ func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]interface{}{
 		"success":    true,
 		"therapists": therapistList,
 		"count":      len(therapistList),
-	})
+	}
+
+	// Cache the response
+	services.Cache.Set(cacheKey, response)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	json.NewEncoder(w).Encode(response)
 }
 
 // GetViolations returns all content violations

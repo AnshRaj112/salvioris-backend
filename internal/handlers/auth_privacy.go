@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
@@ -47,9 +48,10 @@ type ForgotPasswordRequest struct {
 
 // PrivacyAuthResponse returns only anonymous data
 type PrivacyAuthResponse struct {
-	Success bool                   `json:"success"`
-	Message string                 `json:"message"`
-	User    map[string]interface{} `json:"user,omitempty"`
+	Success     bool                   `json:"success"`
+	Message     string                 `json:"message"`
+	User        map[string]interface{} `json:"user,omitempty"`
+	SessionToken string                `json:"session_token,omitempty"`
 }
 
 // CheckUsernameAvailability checks if a username is available
@@ -197,6 +199,13 @@ func PrivacySignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create session for the new user (7 days)
+	sessionToken, err := services.CreateSession(userID)
+	if err != nil {
+		log.Printf("WARNING: Failed to create session for user %s: %v", normalizedUsername, err)
+		// Continue without session - user can still sign in
+	}
+
 	// Return anonymous user data only
 	userMap := map[string]interface{}{
 		"id":        userID.String(),
@@ -207,9 +216,10 @@ func PrivacySignup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(PrivacyAuthResponse{
-		Success: true,
-		Message: "Account created successfully",
-		User:    userMap,
+		Success:      true,
+		Message:      "Account created successfully",
+		User:         userMap,
+		SessionToken: sessionToken,
 	})
 }
 
@@ -264,6 +274,14 @@ func PrivacySignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create or refresh session (7 days from now)
+	// If user logs in again, this resets the 7-day timer
+	sessionToken, err := services.CreateSession(userID)
+	if err != nil {
+		log.Printf("WARNING: Failed to create session for user %s: %v", normalizedUsername, err)
+		// Continue without session - but this should not happen normally
+	}
+
 	// Track device for support purposes
 	deviceToken := generateDeviceToken()
 	ipAddress := getIPAddress(r)
@@ -291,9 +309,10 @@ func PrivacySignin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(PrivacyAuthResponse{
-		Success: true,
-		Message: "Login successful",
-		User:    userMap,
+		Success:      true,
+		Message:      "Login successful",
+		User:         userMap,
+		SessionToken: sessionToken,
 	})
 }
 

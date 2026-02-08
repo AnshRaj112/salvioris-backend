@@ -10,6 +10,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/config"
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/handlers"
+	"github.com/AnshRaj112/serenify-backend/internal/middleware"
 	"github.com/AnshRaj112/serenify-backend/internal/routes"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
@@ -48,6 +49,13 @@ func main() {
 		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
 	defer database.DisconnectPostgres()
+
+	// Connect to Redis
+	log.Printf("Connecting to Redis...")
+	if err := database.ConnectRedis(cfg.RedisURI); err != nil {
+		log.Fatal("Failed to connect to Redis:", err)
+	}
+	defer database.DisconnectRedis()
 
 	// Initialize Cloudinary service
 	if cfg.CloudinaryName != "" && cfg.CloudinaryAPIKey != "" && cfg.CloudinaryAPISecret != "" {
@@ -110,7 +118,10 @@ func main() {
 	})
 	r.Use(corsMiddleware.Handler)
 
-	// Health check
+	// Apply rate limiting middleware to all routes
+	r.Use(middleware.RateLimitMiddleware)
+
+	// Health check (no rate limit)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
