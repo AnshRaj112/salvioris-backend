@@ -10,6 +10,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
+	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -95,11 +96,11 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 	// Check content for threats and self-harm
 	hasThreat, hasSelfHarm, _ := services.CheckContent(req.Message)
 	
-	var userObjectID *primitive.ObjectID
+	var userUUID *uuid.UUID
 	if req.UserID != "" {
-		parsedID, parseErr := primitive.ObjectIDFromHex(req.UserID)
+		parsedUUID, parseErr := uuid.Parse(req.UserID)
 		if parseErr == nil {
-			userObjectID = &parsedID
+			userUUID = &parsedUUID
 		}
 	}
 
@@ -118,7 +119,7 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Record the violation
-		_ = services.RecordViolation(userObjectID, ipAddress, violationType, req.Message, "", "warning")
+		_ = services.RecordViolation(userUUID, ipAddress, violationType, req.Message, "", "warning")
 
 		// If this is the 3rd violation (after 2 warnings), block the IP
 		if violationCount >= 2 {
@@ -132,7 +133,7 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 			_ = services.BlockIP(ipAddress, reason, 7)
 			
 			// Record violation with blocked action
-			_ = services.RecordViolation(userObjectID, ipAddress, violationType, req.Message, "", "blocked")
+			_ = services.RecordViolation(userUUID, ipAddress, violationType, req.Message, "", "blocked")
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -190,10 +191,11 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 		Message:   req.Message,
 	}
 
-	// Set user ID (we know it's not empty here)
-	parsedID, parseErr := primitive.ObjectIDFromHex(req.UserID)
-	if parseErr == nil {
-		vent.UserID = &parsedID
+	// Set user ID as string (UUID from PostgreSQL)
+	// Store as string in MongoDB since user IDs are now UUIDs from PostgreSQL
+	if req.UserID != "" {
+		// Store user_id as string in MongoDB
+		vent.UserIDString = req.UserID
 	}
 
 	// Insert vent into database
@@ -208,14 +210,19 @@ func CreateVent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return vent (without sensitive data)
+	// Return vent with anonymous username only (privacy-first)
 	ventMap := map[string]interface{}{
 		"id":         vent.ID.Hex(),
 		"message":    vent.Message,
 		"created_at": vent.CreatedAt,
 	}
-	if vent.UserID != nil {
-		ventMap["user_id"] = vent.UserID.Hex()
+	
+	// Add anonymous username if user_id exists
+	if vent.UserIDString != "" {
+		username, _ := services.GetUsernameByID(vent.UserIDString)
+		if username != "" {
+			ventMap["username"] = username // Only return anonymous username
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -256,9 +263,16 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 	// Build filter
 	filter := bson.M{}
 	if userID != "" {
-		userObjectID, err := primitive.ObjectIDFromHex(userID)
-		if err == nil {
-			filter["user_id"] = userObjectID
+		// Try to match either user_id_string (UUID) or user_id (ObjectID for backward compatibility)
+		// First try UUID format
+		if _, err := uuid.Parse(userID); err == nil {
+			filter["user_id_string"] = userID
+		} else {
+			// Try ObjectID format for backward compatibility
+			userObjectID, err := primitive.ObjectIDFromHex(userID)
+			if err == nil {
+				filter["user_id"] = userObjectID
+			}
 		}
 	}
 
@@ -309,7 +323,7 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to response format
+	// Convert to response format (with anonymous usernames)
 	ventMaps := make([]map[string]interface{}, 0, len(vents))
 	for _, vent := range vents {
 		ventMap := map[string]interface{}{
@@ -317,9 +331,22 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 			"message":    vent.Message,
 			"created_at": vent.CreatedAt,
 		}
-		if vent.UserID != nil {
-			ventMap["user_id"] = vent.UserID.Hex()
+		
+		// Add anonymous username if user_id exists
+		if vent.UserIDString != "" {
+			username, _ := services.GetUsernameByID(vent.UserIDString)
+			if username != "" {
+				ventMap["username"] = username // Anonymous username only
+			}
+			// Don't expose user_id - only username for anonymity
+		} else if vent.UserID != nil {
+			// Legacy support - try to get username if it's a UUID string
+			username, _ := services.GetUsernameByID(vent.UserID.Hex())
+			if username != "" {
+				ventMap["username"] = username
+			}
 		}
+		
 		ventMaps = append(ventMaps, ventMap)
 	}
 

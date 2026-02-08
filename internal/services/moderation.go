@@ -1,7 +1,7 @@
 package services
 
 import (
-	"context"
+	"database/sql"
 	"net/http"
 	"regexp"
 	"strings"
@@ -10,9 +10,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/google/uuid"
 )
 
 // Base canonical words - the ONLY source of truth
@@ -247,132 +245,103 @@ func GetIPAddress(r *http.Request) string {
 }
 
 // RecordViolation records a content violation
-func RecordViolation(userID *primitive.ObjectID, ipAddress string, violationType models.ViolationType, message string, ventID string, actionTaken string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	violation := models.Violation{
-		ID:          primitive.NewObjectID(),
-		CreatedAt:   time.Now(),
-		UserID:      userID,
-		IPAddress:   ipAddress,
-		Type:        violationType,
-		Message:     message,
-		VentID:      ventID,
-		ActionTaken: actionTaken,
+func RecordViolation(userID *uuid.UUID, ipAddress string, violationType models.ViolationType, message string, ventID string, actionTaken string) error {
+	var err error
+	if userID != nil {
+		_, err = database.PostgresDB.Exec(`
+			INSERT INTO violations (id, created_at, user_id, ip_address, type, message, vent_id, action_taken)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, uuid.New(), time.Now(), userID, ipAddress, string(violationType), message, ventID, actionTaken)
+	} else {
+		_, err = database.PostgresDB.Exec(`
+			INSERT INTO violations (id, created_at, user_id, ip_address, type, message, vent_id, action_taken)
+			VALUES ($1, $2, NULL, $3, $4, $5, $6, $7)
+		`, uuid.New(), time.Now(), ipAddress, string(violationType), message, ventID, actionTaken)
 	}
-	
-	_, err := database.DB.Collection("violations").InsertOne(ctx, violation)
 	return err
 }
 
 // GetViolationCount gets the number of violations for an IP address
 func GetViolationCount(ipAddress string) (int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	count, err := database.DB.Collection("violations").CountDocuments(ctx, bson.M{
-		"ip_address": ipAddress,
-		"created_at": bson.M{
-			"$gte": time.Now().Add(-24 * time.Hour), // Last 24 hours
-		},
-	})
-	
+	var count int64
+	err := database.PostgresDB.QueryRow(`
+		SELECT COUNT(*) FROM violations
+		WHERE ip_address = $1 AND created_at >= $2
+	`, ipAddress, time.Now().Add(-24*time.Hour)).Scan(&count)
 	return count, err
 }
 
 // IsIPBlocked checks if an IP address is currently blocked
 func IsIPBlocked(ipAddress string) (bool, *models.BlockedIP, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
 	var blockedIP models.BlockedIP
-	err := database.DB.Collection("blocked_ips").FindOne(ctx, bson.M{
-		"ip_address": ipAddress,
-		"is_active":  true,
-		"expires_at": bson.M{"$gt": time.Now()},
-	}).Decode(&blockedIP)
+	var id uuid.UUID
+	err := database.PostgresDB.QueryRow(`
+		SELECT id, created_at, expires_at, ip_address, reason, is_active
+		FROM blocked_ips
+		WHERE ip_address = $1 AND is_active = true AND expires_at > $2
+		LIMIT 1
+	`, ipAddress, time.Now()).Scan(&id, &blockedIP.CreatedAt, &blockedIP.ExpiresAt, &blockedIP.IPAddress, &blockedIP.Reason, &blockedIP.IsActive)
 	
-	if err == mongo.ErrNoDocuments {
+	if err == sql.ErrNoRows {
 		return false, nil, nil
 	}
 	if err != nil {
 		return false, nil, err
 	}
 	
+	// Convert UUID to string for ID field
+	blockedIP.ID = id.String()
 	return true, &blockedIP, nil
 }
 
 // BlockIP blocks an IP address for a specified duration
 func BlockIP(ipAddress string, reason string, durationDays int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
 	// First, deactivate any existing blocks for this IP
-	_, err := database.DB.Collection("blocked_ips").UpdateMany(ctx, bson.M{
-		"ip_address": ipAddress,
-		"is_active":  true,
-	}, bson.M{
-		"$set": bson.M{"is_active": false},
-	})
+	_, err := database.PostgresDB.Exec(`
+		UPDATE blocked_ips SET is_active = false
+		WHERE ip_address = $1 AND is_active = true
+	`, ipAddress)
 	if err != nil {
 		return err
 	}
 	
 	// Create new block
-	blockedIP := models.BlockedIP{
-		ID:        primitive.NewObjectID(),
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(time.Duration(durationDays) * 24 * time.Hour),
-		IPAddress: ipAddress,
-		Reason:    reason,
-		IsActive:  true,
-	}
-	
-	_, err = database.DB.Collection("blocked_ips").InsertOne(ctx, blockedIP)
+	_, err = database.PostgresDB.Exec(`
+		INSERT INTO blocked_ips (id, created_at, expires_at, ip_address, reason, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, uuid.New(), time.Now(), time.Now().Add(time.Duration(durationDays)*24*time.Hour), ipAddress, reason, true)
 	return err
 }
 
 // UnblockIP unblocks an IP address (admin function)
 func UnblockIP(ipAddress string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	_, err := database.DB.Collection("blocked_ips").UpdateMany(ctx, bson.M{
-		"ip_address": ipAddress,
-		"is_active":  true,
-	}, bson.M{
-		"$set": bson.M{"is_active": false},
-	})
-	
+	_, err := database.PostgresDB.Exec(`
+		UPDATE blocked_ips SET is_active = false
+		WHERE ip_address = $1 AND is_active = true
+	`, ipAddress)
 	return err
 }
 
 // CleanupOldViolations removes violations older than specified hours
 // This keeps the database clean while preserving blocked IPs
 func CleanupOldViolations(hoursOld int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	
 	// Calculate cutoff time
 	cutoffTime := time.Now().Add(-time.Duration(hoursOld) * time.Hour)
 	
 	// Delete violations older than cutoff time
 	// Note: This does NOT delete blocked_ips - those are kept separately
-	result, err := database.DB.Collection("violations").DeleteMany(ctx, bson.M{
-		"created_at": bson.M{
-			"$lt": cutoffTime,
-		},
-	})
+	result, err := database.PostgresDB.Exec(`
+		DELETE FROM violations WHERE created_at < $1
+	`, cutoffTime)
 	
 	if err != nil {
 		return err
 	}
 	
 	// Log cleanup (optional, can be removed if not needed)
-	if result.DeletedCount > 0 {
+	if rowsAffected, err := result.RowsAffected(); err == nil && rowsAffected > 0 {
 		// You can add logging here if needed
-		// log.Printf("Cleaned up %d old violations (older than %d hours)", result.DeletedCount, hoursOld)
+		// log.Printf("Cleaned up %d old violations (older than %d hours)", rowsAffected, hoursOld)
 	}
 	
 	return nil

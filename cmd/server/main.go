@@ -25,6 +25,13 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// Connect to PostgreSQL
+	log.Printf("Connecting to PostgreSQL...")
+	if err := database.ConnectPostgres(cfg.PostgresURI); err != nil {
+		log.Fatal("Failed to connect to PostgreSQL:", err)
+	}
+	defer database.DisconnectPostgres()
+
 	// Initialize Cloudinary service
 	if cfg.CloudinaryName != "" && cfg.CloudinaryAPIKey != "" && cfg.CloudinaryAPISecret != "" {
 		if err := handlers.InitCloudinaryService(cfg); err != nil {

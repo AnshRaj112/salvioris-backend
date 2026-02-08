@@ -6,7 +6,14 @@ import (
 )
 
 func SetupRoutes(r *chi.Mux) {
-	// Auth routes
+	// Privacy-first auth routes
+	r.Post("/api/auth/signup", handlers.PrivacySignup)
+	r.Post("/api/auth/signin", handlers.PrivacySignin)
+	r.Post("/api/auth/check-username", handlers.CheckUsernameAvailability)
+	r.Post("/api/auth/forgot-username", handlers.ForgotUsername)
+	r.Post("/api/auth/forgot-password", handlers.ForgotPassword)
+	
+	// Legacy auth routes (for backward compatibility - can be removed later)
 	r.Post("/api/auth/user/signup", handlers.UserSignup)
 	r.Post("/api/auth/user/signin", handlers.UserSignin)
 	r.Post("/api/auth/therapist/signup", handlers.TherapistSignup)

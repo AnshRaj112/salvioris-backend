@@ -1,16 +1,13 @@
 package handlers
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/google/uuid"
 )
 
 // CheckTherapistStatus checks if a therapist is approved
@@ -21,13 +18,13 @@ func CheckTherapistStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var therapist models.Therapist
-	err := database.DB.Collection("therapists").FindOne(ctx, bson.M{"email": email}).Decode(&therapist)
+	var name sql.NullString
+	var isApproved bool
+	err := database.PostgresDB.QueryRow(`
+		SELECT name, is_approved FROM therapists WHERE email = $1
+	`, email).Scan(&name, &isApproved)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == sql.ErrNoRows {
 			http.Error(w, "Therapist not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "Database error", http.StatusInternalServerError)
@@ -36,12 +33,12 @@ func CheckTherapistStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"is_approved": therapist.IsApproved,
-		"email":       therapist.Email,
-		"name":        therapist.Name,
+		"is_approved": isApproved,
+		"email":       email,
+		"name":        name.String,
 	}
 
-	if therapist.IsApproved {
+	if isApproved {
 		response["message"] = "Your application has been approved! You can now sign in."
 	} else {
 		response["message"] = "Your application is still pending approval."
@@ -59,19 +56,31 @@ func GetTherapistByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	objectID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
+	// Validate UUID format
+	if _, err := uuid.Parse(id); err != nil {
 		http.Error(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	var therapistID, name, email, licenseNumber, licenseState, phone sql.NullString
+	var collegeDegree, mastersInstitution, psychologistType, dsmAwareness, therapyTypes sql.NullString
+	var specialization, certificateImagePath, degreeImagePath sql.NullString
+	var yearsOfExperience, successfulCases int
+	var isApproved bool
+	var createdAt time.Time
 
-	var therapist models.Therapist
-	err = database.DB.Collection("therapists").FindOne(ctx, bson.M{"_id": objectID}).Decode(&therapist)
+	err := database.PostgresDB.QueryRow(`
+		SELECT id, created_at, name, email, license_number, license_state,
+			years_of_experience, specialization, phone, college_degree, masters_institution,
+			psychologist_type, successful_cases, dsm_awareness, therapy_types,
+			certificate_image_path, degree_image_path, is_approved
+		FROM therapists WHERE id = $1
+	`, id).Scan(&therapistID, &createdAt, &name, &email, &licenseNumber, &licenseState,
+		&yearsOfExperience, &specialization, &phone, &collegeDegree, &mastersInstitution,
+		&psychologistType, &successfulCases, &dsmAwareness, &therapyTypes,
+		&certificateImagePath, &degreeImagePath, &isApproved)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == sql.ErrNoRows {
 			http.Error(w, "Therapist not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "Database error", http.StatusInternalServerError)
@@ -80,24 +89,24 @@ func GetTherapistByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	therapistMap := map[string]interface{}{
-		"id":                   therapist.ID.Hex(),
-		"name":                 therapist.Name,
-		"email":                therapist.Email,
-		"created_at":           therapist.CreatedAt,
-		"license_number":       therapist.LicenseNumber,
-		"license_state":       therapist.LicenseState,
-		"years_of_experience":  therapist.YearsOfExperience,
-		"specialization":       therapist.Specialization,
-		"phone":                therapist.Phone,
-		"college_degree":       therapist.CollegeDegree,
-		"masters_institution":  therapist.MastersInstitution,
-		"psychologist_type":    therapist.PsychologistType,
-		"successful_cases":     therapist.SuccessfulCases,
-		"dsm_awareness":        therapist.DSMAwareness,
-		"therapy_types":        therapist.TherapyTypes,
-		"certificate_image_path": therapist.CertificateImagePath,
-		"degree_image_path":     therapist.DegreeImagePath,
-		"is_approved":          therapist.IsApproved,
+		"id":                   therapistID.String,
+		"name":                 name.String,
+		"email":                email.String,
+		"created_at":           createdAt,
+		"license_number":       licenseNumber.String,
+		"license_state":       licenseState.String,
+		"years_of_experience":  yearsOfExperience,
+		"specialization":       specialization.String,
+		"phone":                phone.String,
+		"college_degree":       collegeDegree.String,
+		"masters_institution":  mastersInstitution.String,
+		"psychologist_type":    psychologistType.String,
+		"successful_cases":     successfulCases,
+		"dsm_awareness":        dsmAwareness.String,
+		"therapy_types":        therapyTypes.String,
+		"certificate_image_path": certificateImagePath.String,
+		"degree_image_path":     degreeImagePath.String,
+		"is_approved":          isApproved,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

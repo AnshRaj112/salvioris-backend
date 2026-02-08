@@ -1,0 +1,152 @@
+package database
+
+import (
+	"database/sql"
+	"log"
+	"time"
+
+	_ "github.com/lib/pq"
+)
+
+var PostgresDB *sql.DB
+
+// ConnectPostgres connects to PostgreSQL database
+func ConnectPostgres(postgresURI string) error {
+	var err error
+	
+	PostgresDB, err = sql.Open("postgres", postgresURI)
+	if err != nil {
+		return err
+	}
+
+	// Set connection pool settings
+	PostgresDB.SetMaxOpenConns(25)
+	PostgresDB.SetMaxIdleConns(5)
+	PostgresDB.SetConnMaxLifetime(5 * time.Minute)
+
+	// Test connection
+	if err = PostgresDB.Ping(); err != nil {
+		return err
+	}
+
+	log.Println("✅ Connected to PostgreSQL")
+	
+	// Initialize tables
+	if err = InitPostgresTables(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// InitPostgresTables creates all necessary tables if they don't exist
+func InitPostgresTables() error {
+	queries := []string{
+		// Users table (PRIVACY-FIRST: Public profile data only)
+		`CREATE TABLE IF NOT EXISTS users (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			username VARCHAR(20) NOT NULL UNIQUE,
+			password_hash VARCHAR(255) NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			is_active BOOLEAN NOT NULL DEFAULT TRUE
+		)`,
+		
+		// User recovery table (PRIVATE: Encrypted recovery data)
+		`CREATE TABLE IF NOT EXISTS user_recovery (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			email_encrypted TEXT,
+			phone_encrypted TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(user_id)
+		)`,
+		
+		// User devices table (SECURITY: Device tracking for support)
+		`CREATE TABLE IF NOT EXISTS user_devices (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			device_token VARCHAR(255) NOT NULL UNIQUE,
+			ip_address VARCHAR(255),
+			user_agent TEXT,
+			last_used TIMESTAMP NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		
+		// Therapists table
+		`CREATE TABLE IF NOT EXISTS therapists (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			name VARCHAR(255) NOT NULL,
+			email VARCHAR(255) NOT NULL UNIQUE,
+			password VARCHAR(255) NOT NULL,
+			license_number VARCHAR(255) NOT NULL,
+			license_state VARCHAR(255) NOT NULL,
+			years_of_experience INTEGER NOT NULL,
+			specialization VARCHAR(255),
+			phone VARCHAR(50) NOT NULL,
+			college_degree VARCHAR(255) NOT NULL,
+			masters_institution VARCHAR(255) NOT NULL,
+			psychologist_type VARCHAR(255) NOT NULL,
+			successful_cases INTEGER NOT NULL,
+			dsm_awareness VARCHAR(255) NOT NULL,
+			therapy_types VARCHAR(255) NOT NULL,
+			certificate_image_path TEXT,
+			degree_image_path TEXT,
+			is_approved BOOLEAN NOT NULL DEFAULT FALSE
+		)`,
+		
+		// Violations table
+		`CREATE TABLE IF NOT EXISTS violations (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			ip_address VARCHAR(255) NOT NULL,
+			type VARCHAR(50) NOT NULL,
+			message TEXT NOT NULL,
+			vent_id VARCHAR(255),
+			action_taken VARCHAR(50) NOT NULL
+		)`,
+		
+		// Blocked IPs table
+		`CREATE TABLE IF NOT EXISTS blocked_ips (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP NOT NULL,
+			ip_address VARCHAR(255) NOT NULL,
+			reason TEXT NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE
+		)`,
+		
+		// Create indexes for better performance
+		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
+		`CREATE INDEX IF NOT EXISTS idx_user_recovery_user_id ON user_recovery(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_devices_user_id ON user_devices(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_devices_device_token ON user_devices(device_token)`,
+		`CREATE INDEX IF NOT EXISTS idx_therapists_email ON therapists(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_violations_ip_address ON violations(ip_address)`,
+		`CREATE INDEX IF NOT EXISTS idx_violations_created_at ON violations(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip_address ON blocked_ips(ip_address)`,
+		`CREATE INDEX IF NOT EXISTS idx_blocked_ips_is_active ON blocked_ips(is_active)`,
+	}
+
+	for _, query := range queries {
+		if _, err := PostgresDB.Exec(query); err != nil {
+			return err
+		}
+	}
+
+	log.Println("✅ PostgreSQL tables initialized")
+	return nil
+}
+
+// DisconnectPostgres closes the PostgreSQL connection
+func DisconnectPostgres() error {
+	if PostgresDB != nil {
+		return PostgresDB.Close()
+	}
+	return nil
+}
+

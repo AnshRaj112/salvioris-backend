@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,9 +11,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/google/uuid"
 )
 
 // User Signup Request
@@ -83,15 +81,12 @@ func UserSignup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if user already exists
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var existingUser models.User
-	err := database.DB.Collection("users").FindOne(ctx, bson.M{"email": req.Email}).Decode(&existingUser)
+	var existingEmail string
+	err := database.PostgresDB.QueryRow("SELECT email FROM users WHERE email = $1", req.Email).Scan(&existingEmail)
 	if err == nil {
 		http.Error(w, "User with this email already exists", http.StatusConflict)
 		return
-	} else if err != mongo.ErrNoDocuments {
+	} else if err != sql.ErrNoRows {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -104,21 +99,13 @@ func UserSignup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create user
-	user := models.User{
-		ID:        primitive.NewObjectID(),
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Name:      req.Name,
-		Email:     req.Email,
-		Password:  hashedPassword,
-		Street:    req.Street,
-		City:      req.City,
-		State:     req.State,
-		ZipCode:   req.ZipCode,
-		Country:   req.Country,
-	}
-
-	_, err = database.DB.Collection("users").InsertOne(ctx, user)
+	userID := uuid.New()
+	now := time.Now()
+	
+	_, err = database.PostgresDB.Exec(`
+		INSERT INTO users (id, created_at, updated_at, name, email, password, street, city, state, zip_code, country)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, userID, now, now, req.Name, req.Email, hashedPassword, req.Street, req.City, req.State, req.ZipCode, req.Country)
 	if err != nil {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
@@ -126,15 +113,15 @@ func UserSignup(w http.ResponseWriter, r *http.Request) {
 
 	// Return user (without password)
 	userMap := map[string]interface{}{
-		"id":         user.ID.Hex(),
-		"name":       user.Name,
-		"email":      user.Email,
-		"created_at": user.CreatedAt,
-		"street":     user.Street,
-		"city":       user.City,
-		"state":      user.State,
-		"zip_code":   user.ZipCode,
-		"country":    user.Country,
+		"id":         userID.String(),
+		"name":       req.Name,
+		"email":      req.Email,
+		"created_at": now,
+		"street":     req.Street,
+		"city":       req.City,
+		"state":      req.State,
+		"zip_code":   req.ZipCode,
+		"country":    req.Country,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -161,13 +148,16 @@ func UserSignin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find user
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var user models.User
-	err := database.DB.Collection("users").FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
+	var userID uuid.UUID
+	var name, email, password, street, city, state, zipCode, country sql.NullString
+	var createdAt time.Time
+	
+	err := database.PostgresDB.QueryRow(`
+		SELECT id, created_at, name, email, password, street, city, state, zip_code, country
+		FROM users WHERE email = $1
+	`, req.Email).Scan(&userID, &createdAt, &name, &email, &password, &street, &city, &state, &zipCode, &country)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == sql.ErrNoRows {
 			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		} else {
 			http.Error(w, "Database error", http.StatusInternalServerError)
@@ -176,7 +166,7 @@ func UserSignin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify password
-	valid, err := utils.VerifyPassword(req.Password, user.Password)
+	valid, err := utils.VerifyPassword(req.Password, password.String)
 	if err != nil || !valid {
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
@@ -184,15 +174,15 @@ func UserSignin(w http.ResponseWriter, r *http.Request) {
 
 	// Return user (without password)
 	userMap := map[string]interface{}{
-		"id":         user.ID.Hex(),
-		"name":       user.Name,
-		"email":      user.Email,
-		"created_at": user.CreatedAt,
-		"street":     user.Street,
-		"city":       user.City,
-		"state":      user.State,
-		"zip_code":   user.ZipCode,
-		"country":    user.Country,
+		"id":         userID.String(),
+		"name":       name.String,
+		"email":      email.String,
+		"created_at": createdAt,
+		"street":     street.String,
+		"city":       city.String,
+		"state":      state.String,
+		"zip_code":   zipCode.String,
+		"country":    country.String,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -244,15 +234,12 @@ func TherapistSignup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if therapist already exists
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var existingTherapist models.Therapist
-	err = database.DB.Collection("therapists").FindOne(ctx, bson.M{"email": email}).Decode(&existingTherapist)
+	var existingEmail string
+	err = database.PostgresDB.QueryRow("SELECT email FROM therapists WHERE email = $1", email).Scan(&existingEmail)
 	if err == nil {
 		http.Error(w, "Therapist with this email already exists", http.StatusConflict)
 		return
-	} else if err != mongo.ErrNoDocuments {
+	} else if err != sql.ErrNoRows {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -327,66 +314,56 @@ func TherapistSignup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create therapist - EXPLICITLY set image URLs from Cloudinary uploads
-	therapist := models.Therapist{
-		ID:                  primitive.NewObjectID(),
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Name:                name,
-		Email:               email,
-		Password:            hashedPassword,
-		LicenseNumber:       licenseNumber,
-		LicenseState:        licenseState,
-		YearsOfExperience:   yearsOfExperience,
-		Specialization:      specialization,
-		Phone:               phone,
-		CollegeDegree:       collegeDegree,
-		MastersInstitution:  mastersInstitution,
-		PsychologistType:    psychologistType,
-		SuccessfulCases:     successfulCases,
-		DSMAwareness:        dsmAwareness,
-		TherapyTypes:        therapyTypes,
-		CertificateImagePath: certificateURL, // EXPLICITLY set from Cloudinary upload
-		DegreeImagePath:      degreeURL,       // EXPLICITLY set from Cloudinary upload
-		IsApproved:          false,
-	}
-
+	therapistID := uuid.New()
+	now := time.Now()
+	
 	// Verify what we're about to save
-	log.Printf("Creating therapist: %s (%s)", therapist.Name, therapist.Email)
+	log.Printf("Creating therapist: %s (%s)", name, email)
 	log.Printf("Therapist struct before DB save:")
-	log.Printf("  CertificateImagePath: %q (length: %d)", therapist.CertificateImagePath, len(therapist.CertificateImagePath))
-	log.Printf("  DegreeImagePath: %q (length: %d)", therapist.DegreeImagePath, len(therapist.DegreeImagePath))
+	log.Printf("  CertificateImagePath: %q (length: %d)", certificateURL, len(certificateURL))
+	log.Printf("  DegreeImagePath: %q (length: %d)", degreeURL, len(degreeURL))
 
-	_, err = database.DB.Collection("therapists").InsertOne(ctx, therapist)
+	_, err = database.PostgresDB.Exec(`
+		INSERT INTO therapists (
+			id, created_at, updated_at, name, email, password, license_number, license_state,
+			years_of_experience, specialization, phone, college_degree, masters_institution,
+			psychologist_type, successful_cases, dsm_awareness, therapy_types,
+			certificate_image_path, degree_image_path, is_approved
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+	`, therapistID, now, now, name, email, hashedPassword, licenseNumber, licenseState,
+		yearsOfExperience, specialization, phone, collegeDegree, mastersInstitution,
+		psychologistType, successfulCases, dsmAwareness, therapyTypes,
+		certificateURL, degreeURL, false)
 	if err != nil {
 		log.Printf("ERROR: Failed to insert therapist: %v", err)
 		http.Error(w, "Failed to create therapist", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("✅ Therapist created successfully with ID: %s", therapist.ID.Hex())
-	log.Printf("✅ Saved certificate_image_path: %q", therapist.CertificateImagePath)
-	log.Printf("✅ Saved degree_image_path: %q", therapist.DegreeImagePath)
+	log.Printf("✅ Therapist created successfully with ID: %s", therapistID.String())
+	log.Printf("✅ Saved certificate_image_path: %q", certificateURL)
+	log.Printf("✅ Saved degree_image_path: %q", degreeURL)
 
 	// Return therapist (without password)
 	therapistMap := map[string]interface{}{
-		"id":                   therapist.ID.Hex(),
-		"name":                 therapist.Name,
-		"email":                therapist.Email,
-		"created_at":           therapist.CreatedAt,
-		"license_number":       therapist.LicenseNumber,
-		"license_state":        therapist.LicenseState,
-		"years_of_experience":  therapist.YearsOfExperience,
-		"specialization":       therapist.Specialization,
-		"phone":                therapist.Phone,
-		"college_degree":       therapist.CollegeDegree,
-		"masters_institution":  therapist.MastersInstitution,
-		"psychologist_type":    therapist.PsychologistType,
-		"successful_cases":     therapist.SuccessfulCases,
-		"dsm_awareness":        therapist.DSMAwareness,
-		"therapy_types":        therapist.TherapyTypes,
-		"certificate_image_path": therapist.CertificateImagePath,
-		"degree_image_path":     therapist.DegreeImagePath,
-		"is_approved":          therapist.IsApproved,
+		"id":                   therapistID.String(),
+		"name":                 name,
+		"email":                email,
+		"created_at":           now,
+		"license_number":       licenseNumber,
+		"license_state":        licenseState,
+		"years_of_experience":  yearsOfExperience,
+		"specialization":       specialization,
+		"phone":                phone,
+		"college_degree":       collegeDegree,
+		"masters_institution":  mastersInstitution,
+		"psychologist_type":    psychologistType,
+		"successful_cases":     successfulCases,
+		"dsm_awareness":        dsmAwareness,
+		"therapy_types":        therapyTypes,
+		"certificate_image_path": certificateURL,
+		"degree_image_path":     degreeURL,
+		"is_approved":          false,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -413,13 +390,26 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find therapist
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var therapist models.Therapist
-	err := database.DB.Collection("therapists").FindOne(ctx, bson.M{"email": req.Email}).Decode(&therapist)
+	var therapistID uuid.UUID
+	var name, email, password, licenseNumber, licenseState, specialization, phone sql.NullString
+	var collegeDegree, mastersInstitution, psychologistType, dsmAwareness, therapyTypes sql.NullString
+	var certificateImagePath, degreeImagePath sql.NullString
+	var yearsOfExperience, successfulCases int
+	var isApproved bool
+	var createdAt time.Time
+	
+	err := database.PostgresDB.QueryRow(`
+		SELECT id, created_at, name, email, password, license_number, license_state,
+			years_of_experience, specialization, phone, college_degree, masters_institution,
+			psychologist_type, successful_cases, dsm_awareness, therapy_types,
+			certificate_image_path, degree_image_path, is_approved
+		FROM therapists WHERE email = $1
+	`, req.Email).Scan(&therapistID, &createdAt, &name, &email, &password, &licenseNumber, &licenseState,
+		&yearsOfExperience, &specialization, &phone, &collegeDegree, &mastersInstitution,
+		&psychologistType, &successfulCases, &dsmAwareness, &therapyTypes,
+		&certificateImagePath, &degreeImagePath, &isApproved)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == sql.ErrNoRows {
 			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		} else {
 			http.Error(w, "Database error", http.StatusInternalServerError)
@@ -428,38 +418,38 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify password
-	valid, err := utils.VerifyPassword(req.Password, therapist.Password)
+	valid, err := utils.VerifyPassword(req.Password, password.String)
 	if err != nil || !valid {
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
 
 	// Check if therapist is approved
-	if !therapist.IsApproved {
+	if !isApproved {
 		http.Error(w, "Your application is pending approval. Please wait for admin approval before logging in.", http.StatusForbidden)
 		return
 	}
 
 	// Return therapist (without password)
 	therapistMap := map[string]interface{}{
-		"id":                   therapist.ID.Hex(),
-		"name":                 therapist.Name,
-		"email":                therapist.Email,
-		"created_at":           therapist.CreatedAt,
-		"license_number":       therapist.LicenseNumber,
-		"license_state":        therapist.LicenseState,
-		"years_of_experience":  therapist.YearsOfExperience,
-		"specialization":       therapist.Specialization,
-		"phone":                therapist.Phone,
-		"college_degree":       therapist.CollegeDegree,
-		"masters_institution":  therapist.MastersInstitution,
-		"psychologist_type":    therapist.PsychologistType,
-		"successful_cases":     therapist.SuccessfulCases,
-		"dsm_awareness":        therapist.DSMAwareness,
-		"therapy_types":        therapist.TherapyTypes,
-		"certificate_image_path": therapist.CertificateImagePath,
-		"degree_image_path":     therapist.DegreeImagePath,
-		"is_approved":          therapist.IsApproved,
+		"id":                   therapistID.String(),
+		"name":                 name.String,
+		"email":                email.String,
+		"created_at":           createdAt,
+		"license_number":       licenseNumber.String,
+		"license_state":        licenseState.String,
+		"years_of_experience":  yearsOfExperience,
+		"specialization":       specialization.String,
+		"phone":                phone.String,
+		"college_degree":       collegeDegree.String,
+		"masters_institution":  mastersInstitution.String,
+		"psychologist_type":    psychologistType.String,
+		"successful_cases":     successfulCases,
+		"dsm_awareness":        dsmAwareness.String,
+		"therapy_types":        therapyTypes.String,
+		"certificate_image_path": certificateImagePath.String,
+		"degree_image_path":     degreeImagePath.String,
+		"is_approved":          isApproved,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

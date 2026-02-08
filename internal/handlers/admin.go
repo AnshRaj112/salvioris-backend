@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -9,6 +9,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
+	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -18,47 +19,59 @@ import (
 func GetPendingTherapists(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers
 	w.Header().Set("Content-Type", "application/json")
-	
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
-	// Find all pending therapists
-	cursor, err := database.DB.Collection("therapists").Find(ctx, bson.M{"is_approved": false}, options.Find().SetSort(bson.M{"created_at": -1}))
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, created_at, name, email, license_number, license_state,
+			years_of_experience, specialization, phone, college_degree, masters_institution,
+			psychologist_type, successful_cases, dsm_awareness, therapy_types,
+			certificate_image_path, degree_image_path, is_approved
+		FROM therapists
+		WHERE is_approved = false
+		ORDER BY created_at DESC
+	`)
 	if err != nil {
 		http.Error(w, "Failed to fetch therapists: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
-	var therapists []models.Therapist
-	if err = cursor.All(ctx, &therapists); err != nil {
-		http.Error(w, "Failed to decode therapists: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	therapistList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, name, email, licenseNumber, licenseState, phone sql.NullString
+		var collegeDegree, mastersInstitution, psychologistType, dsmAwareness, therapyTypes sql.NullString
+		var specialization, certificateImagePath, degreeImagePath sql.NullString
+		var yearsOfExperience, successfulCases int
+		var isApproved bool
+		var createdAt time.Time
 
-	// Convert to response format
-	therapistList := make([]map[string]interface{}, len(therapists))
-	for i, therapist := range therapists {
-		therapistList[i] = map[string]interface{}{
-			"id":                    therapist.ID.Hex(),
-			"name":                  therapist.Name,
-			"email":                 therapist.Email,
-			"created_at":            therapist.CreatedAt,
-			"license_number":       therapist.LicenseNumber,
-			"license_state":        therapist.LicenseState,
-			"years_of_experience":  therapist.YearsOfExperience,
-			"specialization":        therapist.Specialization,
-			"phone":                therapist.Phone,
-			"college_degree":       therapist.CollegeDegree,
-			"masters_institution":  therapist.MastersInstitution,
-			"psychologist_type":    therapist.PsychologistType,
-			"successful_cases":      therapist.SuccessfulCases,
-			"dsm_awareness":         therapist.DSMAwareness,
-			"therapy_types":         therapist.TherapyTypes,
-			"certificate_image_path": therapist.CertificateImagePath,
-			"degree_image_path":      therapist.DegreeImagePath,
-			"is_approved":           therapist.IsApproved,
+		if err := rows.Scan(&id, &createdAt, &name, &email, &licenseNumber, &licenseState,
+			&yearsOfExperience, &specialization, &phone, &collegeDegree, &mastersInstitution,
+			&psychologistType, &successfulCases, &dsmAwareness, &therapyTypes,
+			&certificateImagePath, &degreeImagePath, &isApproved); err != nil {
+			http.Error(w, "Failed to scan therapists: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+
+		therapistList = append(therapistList, map[string]interface{}{
+			"id":                    id.String,
+			"name":                  name.String,
+			"email":                 email.String,
+			"created_at":            createdAt,
+			"license_number":       licenseNumber.String,
+			"license_state":        licenseState.String,
+			"years_of_experience":  yearsOfExperience,
+			"specialization":       specialization.String,
+			"phone":                phone.String,
+			"college_degree":       collegeDegree.String,
+			"masters_institution":  mastersInstitution.String,
+			"psychologist_type":    psychologistType.String,
+			"successful_cases":     successfulCases,
+			"dsm_awareness":        dsmAwareness.String,
+			"therapy_types":        therapyTypes.String,
+			"certificate_image_path": certificateImagePath.String,
+			"degree_image_path":     degreeImagePath.String,
+			"is_approved":          isApproved,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -77,28 +90,31 @@ func ApproveTherapist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	objectID, err := primitive.ObjectIDFromHex(therapistID)
-	if err != nil {
+	// Validate UUID format
+	if _, err := uuid.Parse(therapistID); err != nil {
 		http.Error(w, "Invalid therapist ID", http.StatusBadRequest)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// Update therapist to approved
-	result, err := database.DB.Collection("therapists").UpdateOne(
-		ctx,
-		bson.M{"_id": objectID},
-		bson.M{"$set": bson.M{"is_approved": true, "updated_at": time.Now()}},
-	)
+	result, err := database.PostgresDB.Exec(`
+		UPDATE therapists
+		SET is_approved = true, updated_at = NOW()
+		WHERE id = $1 AND is_approved = false
+	`, therapistID)
 	if err != nil {
 		http.Error(w, "Failed to approve therapist: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if result.MatchedCount == 0 {
-		http.Error(w, "Therapist not found", http.StatusNotFound)
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "Failed to approve therapist: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.Error(w, "Therapist not found or already approved", http.StatusNotFound)
 		return
 	}
 
@@ -117,23 +133,29 @@ func RejectTherapist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	objectID, err := primitive.ObjectIDFromHex(therapistID)
-	if err != nil {
+	// Validate UUID format
+	if _, err := uuid.Parse(therapistID); err != nil {
 		http.Error(w, "Invalid therapist ID", http.StatusBadRequest)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// Delete therapist application
-	result, err := database.DB.Collection("therapists").DeleteOne(ctx, bson.M{"_id": objectID, "is_approved": false})
+	result, err := database.PostgresDB.Exec(`
+		DELETE FROM therapists
+		WHERE id = $1 AND is_approved = false
+	`, therapistID)
 	if err != nil {
 		http.Error(w, "Failed to reject therapist: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if result.DeletedCount == 0 {
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "Failed to reject therapist: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if rowsAffected == 0 {
 		http.Error(w, "Therapist not found or already approved", http.StatusNotFound)
 		return
 	}
@@ -147,44 +169,58 @@ func RejectTherapist(w http.ResponseWriter, r *http.Request) {
 
 // GetApprovedTherapists returns all approved therapists
 func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := database.DB.Collection("therapists").Find(ctx, bson.M{"is_approved": true}, options.Find().SetSort(bson.M{"created_at": -1}))
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, created_at, name, email, license_number, license_state,
+			years_of_experience, specialization, phone, college_degree, masters_institution,
+			psychologist_type, successful_cases, dsm_awareness, therapy_types,
+			certificate_image_path, degree_image_path, is_approved
+		FROM therapists
+		WHERE is_approved = true
+		ORDER BY created_at DESC
+	`)
 	if err != nil {
 		http.Error(w, "Failed to fetch therapists: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
-	var therapists []models.Therapist
-	if err = cursor.All(ctx, &therapists); err != nil {
-		http.Error(w, "Failed to decode therapists: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	therapistList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, name, email, licenseNumber, licenseState, phone sql.NullString
+		var collegeDegree, mastersInstitution, psychologistType, dsmAwareness, therapyTypes sql.NullString
+		var specialization, certificateImagePath, degreeImagePath sql.NullString
+		var yearsOfExperience, successfulCases int
+		var isApproved bool
+		var createdAt time.Time
 
-	therapistList := make([]map[string]interface{}, len(therapists))
-	for i, therapist := range therapists {
-		therapistList[i] = map[string]interface{}{
-			"id":                    therapist.ID.Hex(),
-			"name":                  therapist.Name,
-			"email":                 therapist.Email,
-			"created_at":            therapist.CreatedAt,
-			"license_number":        therapist.LicenseNumber,
-			"license_state":        therapist.LicenseState,
-			"years_of_experience":  therapist.YearsOfExperience,
-			"specialization":        therapist.Specialization,
-			"phone":                 therapist.Phone,
-			"college_degree":       therapist.CollegeDegree,
-			"masters_institution":  therapist.MastersInstitution,
-			"psychologist_type":    therapist.PsychologistType,
-			"successful_cases":      therapist.SuccessfulCases,
-			"dsm_awareness":         therapist.DSMAwareness,
-			"therapy_types":         therapist.TherapyTypes,
-			"certificate_image_path": therapist.CertificateImagePath,
-			"degree_image_path":     therapist.DegreeImagePath,
-			"is_approved":           therapist.IsApproved,
+		if err := rows.Scan(&id, &createdAt, &name, &email, &licenseNumber, &licenseState,
+			&yearsOfExperience, &specialization, &phone, &collegeDegree, &mastersInstitution,
+			&psychologistType, &successfulCases, &dsmAwareness, &therapyTypes,
+			&certificateImagePath, &degreeImagePath, &isApproved); err != nil {
+			http.Error(w, "Failed to scan therapists: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+
+		therapistList = append(therapistList, map[string]interface{}{
+			"id":                    id.String,
+			"name":                  name.String,
+			"email":                 email.String,
+			"created_at":           createdAt,
+			"license_number":       licenseNumber.String,
+			"license_state":        licenseState.String,
+			"years_of_experience":  yearsOfExperience,
+			"specialization":       specialization.String,
+			"phone":                phone.String,
+			"college_degree":       collegeDegree.String,
+			"masters_institution":  mastersInstitution.String,
+			"psychologist_type":    psychologistType.String,
+			"successful_cases":     successfulCases,
+			"dsm_awareness":        dsmAwareness.String,
+			"therapy_types":        therapyTypes.String,
+			"certificate_image_path": certificateImagePath.String,
+			"degree_image_path":     degreeImagePath.String,
+			"is_approved":          isApproved,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -199,39 +235,42 @@ func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 func GetViolations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Find all violations, sorted by most recent
-	cursor, err := database.DB.Collection("violations").Find(ctx, bson.M{}, options.Find().SetSort(bson.M{"created_at": -1}).SetLimit(100))
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, created_at, user_id, ip_address, type, message, vent_id, action_taken
+		FROM violations
+		ORDER BY created_at DESC
+		LIMIT 100
+	`)
 	if err != nil {
 		http.Error(w, "Failed to fetch violations: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
-	var violations []models.Violation
-	if err = cursor.All(ctx, &violations); err != nil {
-		http.Error(w, "Failed to decode violations: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	violationList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, ipAddress, violationType, message, ventID, actionTaken string
+		var createdAt time.Time
+		var userID sql.NullString
 
-	// Convert to response format
-	violationList := make([]map[string]interface{}, len(violations))
-	for i, violation := range violations {
+		if err := rows.Scan(&id, &createdAt, &userID, &ipAddress, &violationType, &message, &ventID, &actionTaken); err != nil {
+			http.Error(w, "Failed to scan violations: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		violationMap := map[string]interface{}{
-			"id":           violation.ID.Hex(),
-			"created_at":   violation.CreatedAt,
-			"ip_address":   violation.IPAddress,
-			"type":         violation.Type,
-			"message":      violation.Message,
-			"vent_id":      violation.VentID,
-			"action_taken": violation.ActionTaken,
+			"id":           id,
+			"created_at":   createdAt,
+			"ip_address":   ipAddress,
+			"type":         violationType,
+			"message":      message,
+			"vent_id":      ventID,
+			"action_taken": actionTaken,
 		}
-		if violation.UserID != nil {
-			violationMap["user_id"] = violation.UserID.Hex()
+		if userID.Valid {
+			violationMap["user_id"] = userID.String
 		}
-		violationList[i] = violationMap
+		violationList = append(violationList, violationMap)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -245,37 +284,37 @@ func GetViolations(w http.ResponseWriter, r *http.Request) {
 func GetBlockedIPs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Find all active blocked IPs
-	cursor, err := database.DB.Collection("blocked_ips").Find(ctx, bson.M{
-		"is_active": true,
-		"expires_at": bson.M{"$gt": time.Now()},
-	}, options.Find().SetSort(bson.M{"created_at": -1}))
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, created_at, expires_at, ip_address, reason, is_active
+		FROM blocked_ips
+		WHERE is_active = true AND expires_at > $1
+		ORDER BY created_at DESC
+	`, time.Now())
 	if err != nil {
 		http.Error(w, "Failed to fetch blocked IPs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
-	var blockedIPs []models.BlockedIP
-	if err = cursor.All(ctx, &blockedIPs); err != nil {
-		http.Error(w, "Failed to decode blocked IPs: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	blockedList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, ipAddress, reason string
+		var createdAt, expiresAt time.Time
+		var isActive bool
 
-	// Convert to response format
-	blockedList := make([]map[string]interface{}, len(blockedIPs))
-	for i, blocked := range blockedIPs {
-		blockedList[i] = map[string]interface{}{
-			"id":         blocked.ID.Hex(),
-			"ip_address": blocked.IPAddress,
-			"reason":     blocked.Reason,
-			"created_at": blocked.CreatedAt,
-			"expires_at": blocked.ExpiresAt,
-			"is_active":  blocked.IsActive,
+		if err := rows.Scan(&id, &createdAt, &expiresAt, &ipAddress, &reason, &isActive); err != nil {
+			http.Error(w, "Failed to scan blocked IPs: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+
+		blockedList = append(blockedList, map[string]interface{}{
+			"id":         id,
+			"ip_address": ipAddress,
+			"reason":     reason,
+			"created_at": createdAt,
+			"expires_at": expiresAt,
+			"is_active":  isActive,
+		})
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

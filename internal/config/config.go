@@ -6,6 +6,7 @@ import (
 
 type Config struct {
 	MongoURI         string
+	PostgresURI      string
 	JWTSecret        string
 	Port             string
 	FrontendURL      string
@@ -17,7 +18,9 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		MongoURI:          getEnv("MONGODB_URI", getEnv("MONGO_URI", "mongodb://localhost:27017/serenify")),
+		PostgresURI:       getEnv("POSTGRES_URI", "postgres://localhost:5432/serenify?sslmode=disable"),
 		JWTSecret:         getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+		EncryptionKey:     getEnv("ENCRYPTION_KEY", ""),
 		Port:              getEnv("PORT", "8080"),
 		FrontendURL:       getEnv("FRONTEND_URL", "http://localhost:3000"),
 		CloudinaryName:    getEnv("CLOUDINARY_CLOUD_NAME", ""),
