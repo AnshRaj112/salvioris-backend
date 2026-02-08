@@ -12,6 +12,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/handlers"
 	"github.com/AnshRaj112/serenify-backend/internal/routes"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
+	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 )
@@ -24,6 +25,22 @@ func main() {
 	}
 	// Load configuration
 	cfg := config.Load()
+
+	// Check encryption key (warn if not set, but don't fail)
+	if cfg.EncryptionKey == "" {
+		log.Println("⚠️  WARNING: ENCRYPTION_KEY not set. Recovery email encryption will not work.")
+		log.Println("   To generate a key, run: openssl rand -base64 32")
+		log.Println("   Set it in your environment: ENCRYPTION_KEY=<generated-key>")
+	} else {
+		// Validate encryption key format
+		if _, err := utils.GetEncryptionKey(); err != nil {
+			log.Printf("⚠️  WARNING: ENCRYPTION_KEY is invalid: %v", err)
+			log.Println("   Recovery email encryption will not work.")
+			log.Println("   Key must be base64-encoded 32 bytes. Generate with: openssl rand -base64 32")
+		} else {
+			log.Println("✅ Encryption key configured")
+		}
+	}
 
 	// Connect to PostgreSQL
 	log.Printf("Connecting to PostgreSQL...")

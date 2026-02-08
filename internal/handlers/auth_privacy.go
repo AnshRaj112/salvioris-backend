@@ -175,17 +175,19 @@ func PrivacySignup(w http.ResponseWriter, r *http.Request) {
 	if req.RecoveryEmail != "" {
 		emailEncrypted, err := utils.Encrypt(req.RecoveryEmail)
 		if err != nil {
-			http.Error(w, "Failed to encrypt recovery email", http.StatusInternalServerError)
-			return
-		}
-
-		_, err = tx.Exec(`
-			INSERT INTO user_recovery (id, user_id, email_encrypted, created_at, updated_at)
-			VALUES (gen_random_uuid(), $1, $2, NOW(), NOW())
-		`, userID, emailEncrypted)
-		if err != nil {
-			http.Error(w, "Failed to save recovery data", http.StatusInternalServerError)
-			return
+			// Log the error but don't fail signup - recovery email is optional
+			log.Printf("WARNING: Failed to encrypt recovery email for user %s: %v", normalizedUsername, err)
+			log.Printf("WARNING: ENCRYPTION_KEY may not be set or is invalid. Recovery email will not be stored.")
+			// Continue without recovery email - user can still sign up
+		} else {
+			_, err = tx.Exec(`
+				INSERT INTO user_recovery (id, user_id, email_encrypted, created_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, NOW(), NOW())
+			`, userID, emailEncrypted)
+			if err != nil {
+				// Log but don't fail - recovery is optional
+				log.Printf("WARNING: Failed to save recovery data for user %s: %v", normalizedUsername, err)
+			}
 		}
 	}
 
