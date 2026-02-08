@@ -12,6 +12,7 @@ func SetupRoutes(r *chi.Mux) {
 	r.Post("/api/auth/check-username", handlers.CheckUsernameAvailability)
 	r.Post("/api/auth/forgot-username", handlers.ForgotUsername)
 	r.Post("/api/auth/forgot-password", handlers.ForgotPassword)
+	r.Post("/api/auth/reset-password", handlers.ResetPassword)
 	
 	// Legacy auth routes (for backward compatibility - can be removed later)
 	r.Post("/api/auth/user/signup", handlers.UserSignup)

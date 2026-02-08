@@ -119,6 +119,16 @@ func InitPostgresTables() error {
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
 		
+		// Password reset tokens table
+		`CREATE TABLE IF NOT EXISTS password_reset_tokens (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token VARCHAR(255) NOT NULL UNIQUE,
+			expires_at TIMESTAMP NOT NULL,
+			used BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		
 		// Create indexes for better performance
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
@@ -130,6 +140,9 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_violations_created_at ON violations(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocked_ips_ip_address ON blocked_ips(ip_address)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocked_ips_is_active ON blocked_ips(is_active)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires_at ON password_reset_tokens(expires_at)`,
 	}
 
 	for _, query := range queries {

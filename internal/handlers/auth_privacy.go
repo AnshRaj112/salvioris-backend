@@ -6,12 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
@@ -322,7 +323,7 @@ func ForgotUsername(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var foundUserID string
+	var foundUserID uuid.UUID
 	var foundUsername string
 
 	for rows.Next() {
@@ -337,7 +338,7 @@ func ForgotUsername(w http.ResponseWriter, r *http.Request) {
 		if emailEncrypted.Valid {
 			decryptedEmail, err := utils.Decrypt(emailEncrypted.String)
 			if err == nil && strings.EqualFold(decryptedEmail, req.RecoveryEmail) {
-				foundUserID = userID.String()
+				foundUserID = userID
 				foundUsername = username
 				break
 			}
@@ -345,7 +346,12 @@ func ForgotUsername(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Always return success (privacy: don't reveal if email exists)
-	// In production, send email if found
+	// In production, send email with username if found
+	if foundUserID != uuid.Nil {
+		// TODO: Send email with username to foundUsername
+		// For now, just log it (remove in production!)
+		log.Printf("Username recovery requested for user: %s", foundUsername)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -367,13 +373,176 @@ func ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Similar to ForgotUsername - find user by email
-	// In production, generate reset token and send via email
+	// Find user by encrypted email
+	rows, err := database.PostgresDB.Query(`
+		SELECT ur.user_id, ur.email_encrypted, u.username
+		FROM user_recovery ur
+		JOIN users u ON u.id = ur.user_id
+		WHERE ur.email_encrypted IS NOT NULL
+	`)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var foundUserID uuid.UUID
+	var foundEmail string
+
+	for rows.Next() {
+		var userID uuid.UUID
+		var emailEncrypted sql.NullString
+		var username string
+
+		if err := rows.Scan(&userID, &emailEncrypted, &username); err != nil {
+			continue
+		}
+
+		if emailEncrypted.Valid {
+			decryptedEmail, err := utils.Decrypt(emailEncrypted.String)
+			if err == nil && strings.EqualFold(decryptedEmail, req.RecoveryEmail) {
+				foundUserID = userID
+				foundEmail = decryptedEmail
+				break
+			}
+		}
+	}
+
+	// Always return success (privacy: don't reveal if email exists)
+	// But generate token if user found
+	if foundUserID != uuid.Nil {
+		// Generate secure reset token
+		resetToken := generateResetToken()
+		
+		// Store token in database (expires in 1 hour)
+		expiresAt := time.Now().Add(1 * time.Hour)
+		_, err = database.PostgresDB.Exec(`
+			INSERT INTO password_reset_tokens (id, user_id, token, expires_at, used, created_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, FALSE, NOW())
+		`, foundUserID, resetToken, expiresAt)
+		
+		if err == nil {
+			// In production, send email with reset link
+			// For now, log the token (remove in production!)
+			// Format: /reset-password?token=RESET_TOKEN
+			frontendURL := os.Getenv("FRONTEND_URL")
+			if frontendURL == "" {
+				frontendURL = "http://localhost:3000"
+			}
+			resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, resetToken)
+			
+			// TODO: Send email with resetLink to foundEmail
+			// For development, you can log it:
+			log.Printf("Password reset link for %s: %s", foundEmail, resetLink)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "If an account exists with this email, you will receive a password reset link.",
 	})
+}
+
+// ResetPasswordRequest for password reset with token
+type ResetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+// ResetPassword handles password reset with token
+func ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req ResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Token == "" || req.NewPassword == "" {
+		http.Error(w, "Token and new password are required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.NewPassword) < 8 {
+		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Find valid reset token
+	var userID uuid.UUID
+	var expiresAt time.Time
+	var used bool
+	
+	err := database.PostgresDB.QueryRow(`
+		SELECT user_id, expires_at, used
+		FROM password_reset_tokens
+		WHERE token = $1 AND expires_at > NOW() AND used = FALSE
+	`, req.Token).Scan(&userID, &expiresAt, &used)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Invalid or expired reset token", http.StatusBadRequest)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Hash new password
+	hashedPassword, err := utils.HashPassword(req.NewPassword)
+	if err != nil {
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// Start transaction
+	tx, err := database.PostgresDB.Begin()
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	// Update password
+	_, err = tx.Exec(`
+		UPDATE users
+		SET password_hash = $1
+		WHERE id = $2
+	`, hashedPassword, userID)
+	if err != nil {
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	// Mark token as used
+	_, err = tx.Exec(`
+		UPDATE password_reset_tokens
+		SET used = TRUE
+		WHERE token = $1
+	`, req.Token)
+	if err != nil {
+		http.Error(w, "Failed to mark token as used", http.StatusInternalServerError)
+		return
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Password reset successfully. You can now sign in with your new password.",
+	})
+}
+
+// Helper function to generate reset token
+func generateResetToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.URLEncoding.EncodeToString(b)
 }
 
 // Helper functions

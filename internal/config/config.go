@@ -8,6 +8,7 @@ type Config struct {
 	MongoURI         string
 	PostgresURI      string
 	JWTSecret        string
+	EncryptionKey    string
 	Port             string
 	FrontendURL      string
 	CloudinaryName   string

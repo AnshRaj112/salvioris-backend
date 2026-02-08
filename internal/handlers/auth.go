@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )

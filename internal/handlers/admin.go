@@ -7,12 +7,8 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // GetPendingTherapists returns all therapists with is_approved = false
