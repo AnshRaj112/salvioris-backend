@@ -51,5 +51,11 @@ func SetupRoutes(r *chi.Mux) {
 	// Contact us routes
 	r.Post("/api/contact", handlers.SubmitContact)
 	r.Get("/api/admin/contacts", handlers.GetContacts)
+	
+	// Waitlist routes
+	r.Post("/api/waitlist/user", handlers.SubmitUserWaitlist)
+	r.Post("/api/waitlist/therapist", handlers.SubmitTherapistWaitlist)
+	r.Get("/api/admin/waitlist/user", handlers.GetUserWaitlist)
+	r.Get("/api/admin/waitlist/therapist", handlers.GetTherapistWaitlist)
 }
 
