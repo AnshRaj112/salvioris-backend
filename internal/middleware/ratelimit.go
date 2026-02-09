@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
@@ -25,8 +26,15 @@ const (
 )
 
 // RateLimitMiddleware provides rate limiting with IP blocking
+// Admin routes are exempt from rate limiting
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip rate limiting for admin routes
+		if strings.HasPrefix(r.URL.Path, "/api/admin/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		
 		ipAddress := services.GetIPAddress(r)
 		
 		// Check if IP is already blocked

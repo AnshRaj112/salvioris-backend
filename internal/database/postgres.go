@@ -166,6 +166,17 @@ func InitPostgresTables() error {
 			ip_address VARCHAR(255)
 		)`,
 		
+		// Admins table
+		`CREATE TABLE IF NOT EXISTS admins (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			username VARCHAR(50) NOT NULL UNIQUE,
+			email VARCHAR(255) NOT NULL UNIQUE,
+			password_hash VARCHAR(255) NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE
+		)`,
+		
 		// Create indexes for better performance
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
@@ -187,6 +198,8 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_user_waitlist_email ON user_waitlist(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_therapist_waitlist_created_at ON therapist_waitlist(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_therapist_waitlist_email ON therapist_waitlist(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_admins_username ON admins(username)`,
+		`CREATE INDEX IF NOT EXISTS idx_admins_email ON admins(email)`,
 	}
 
 	for _, query := range queries {
