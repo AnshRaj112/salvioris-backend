@@ -3,10 +3,13 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
@@ -237,9 +240,18 @@ func AdminSignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate JWT token (you can use your existing JWT utility)
-	// For now, we'll return a simple success response
-	// TODO: Add JWT token generation if needed
+	// Create admin session token (stored in Redis)
+	sessionToken, err := services.CreateAdminSession(adminID)
+	if err != nil {
+		log.Printf("ERROR: Failed to create admin session for %s: %v", username, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(AdminSigninResponse{
+			Success: false,
+			Message: "Failed to create admin session",
+		})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -252,7 +264,48 @@ func AdminSignin(w http.ResponseWriter, r *http.Request) {
 			"email":     email,
 			"created_at": createdAt,
 		},
-		Token: "", // Add JWT token here if needed
+		Token: sessionToken,
 	})
+}
+
+func extractBearerToken(authHeader string) string {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return ""
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	if !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+// requireAdminAuth validates the admin session token from Authorization: Bearer <token>
+// and returns the adminID.
+func requireAdminAuth(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	token := extractBearerToken(r.Header.Get("Authorization"))
+	adminID, ok, err := services.ValidateAdminSession(token)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to validate admin session",
+		})
+		return uuid.Nil, false
+	}
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Unauthorized",
+		})
+		return uuid.Nil, false
+	}
+	return adminID, true
 }
 

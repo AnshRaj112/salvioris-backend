@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -314,6 +315,153 @@ func GetTherapistWaitlist(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		Entries: entryMaps,
 		Total:   total,
+	})
+}
+
+type DeleteWaitlistResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// DeleteUserWaitlistEntry deletes a single user waitlist entry by ID (admin only)
+func DeleteUserWaitlistEntry(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := requireAdminAuth(w, r)
+	if !ok {
+		return
+	}
+
+	entryID := r.URL.Query().Get("id")
+	if entryID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Waitlist entry id is required",
+		})
+		return
+	}
+
+	if _, err := uuid.Parse(entryID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Invalid waitlist entry id",
+		})
+		return
+	}
+
+	result, err := database.PostgresDB.Exec(`
+		DELETE FROM user_waitlist
+		WHERE id = $1
+	`, entryID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Failed to delete waitlist entry",
+		})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Failed to delete waitlist entry",
+		})
+		return
+	}
+	if rowsAffected == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Waitlist entry not found",
+		})
+		return
+	}
+
+	log.Printf("ADMIN_ACTION: admin_id=%s deleted user_waitlist id=%s", adminID.String(), entryID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+		Success: true,
+		Message: "Waitlist entry deleted",
+	})
+}
+
+// DeleteTherapistWaitlistEntry deletes a single therapist waitlist entry by ID (admin only)
+func DeleteTherapistWaitlistEntry(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := requireAdminAuth(w, r)
+	if !ok {
+		return
+	}
+
+	entryID := r.URL.Query().Get("id")
+	if entryID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Waitlist entry id is required",
+		})
+		return
+	}
+
+	if _, err := uuid.Parse(entryID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Invalid waitlist entry id",
+		})
+		return
+	}
+
+	result, err := database.PostgresDB.Exec(`
+		DELETE FROM therapist_waitlist
+		WHERE id = $1
+	`, entryID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Failed to delete waitlist entry",
+		})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Failed to delete waitlist entry",
+		})
+		return
+	}
+	if rowsAffected == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+			Success: false,
+			Message: "Waitlist entry not found",
+		})
+		return
+	}
+
+	log.Printf("ADMIN_ACTION: admin_id=%s deleted therapist_waitlist id=%s", adminID.String(), entryID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DeleteWaitlistResponse{
+		Success: true,
+		Message: "Waitlist entry deleted",
 	})
 }
 

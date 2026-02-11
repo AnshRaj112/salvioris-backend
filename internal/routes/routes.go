@@ -57,6 +57,8 @@ func SetupRoutes(r *chi.Mux) {
 	r.Post("/api/waitlist/therapist", handlers.SubmitTherapistWaitlist)
 	r.Get("/api/admin/waitlist/user", handlers.GetUserWaitlist)
 	r.Get("/api/admin/waitlist/therapist", handlers.GetTherapistWaitlist)
+	r.Delete("/api/admin/waitlist/user", handlers.DeleteUserWaitlistEntry)
+	r.Delete("/api/admin/waitlist/therapist", handlers.DeleteTherapistWaitlistEntry)
 	
 	// Admin auth routes (signup removed - admin accounts must be created directly in database)
 	// r.Post("/api/admin/signup", handlers.AdminSignup) // Disabled - use database directly
