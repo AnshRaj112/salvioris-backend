@@ -63,5 +63,13 @@ func SetupRoutes(r *chi.Mux) {
 	// Admin auth routes (signup removed - admin accounts must be created directly in database)
 	// r.Post("/api/admin/signup", handlers.AdminSignup) // Disabled - use database directly
 	r.Post("/api/admin/signin", handlers.AdminSignin)
+	
+	// Group community forum routes
+	r.Post("/api/groups", handlers.CreateGroup)
+	r.Get("/api/groups", handlers.GetGroups)
+	r.Post("/api/groups/join", handlers.JoinGroup)
+	r.Get("/api/groups/members", handlers.GetGroupMembers)
+	r.Get("/api/groups/messages", handlers.GetGroupMessages)
+	r.Post("/api/groups/messages", handlers.SendGroupMessage)
 }
 

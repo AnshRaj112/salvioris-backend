@@ -177,6 +177,36 @@ func InitPostgresTables() error {
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
 		
+		// Groups table (public community groups)
+		`CREATE TABLE IF NOT EXISTS groups (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			name VARCHAR(255) NOT NULL,
+			description TEXT,
+			created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			is_public BOOLEAN NOT NULL DEFAULT TRUE,
+			member_count INTEGER NOT NULL DEFAULT 1
+		)`,
+		
+		// Group members table (many-to-many relationship)
+		`CREATE TABLE IF NOT EXISTS group_members (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(group_id, user_id)
+		)`,
+		
+		// Group messages table
+		`CREATE TABLE IF NOT EXISTS group_messages (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			message TEXT NOT NULL
+		)`,
+		
 		// Create indexes for better performance
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
@@ -200,6 +230,14 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_therapist_waitlist_email ON therapist_waitlist(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_admins_username ON admins(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_admins_email ON admins(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_groups_created_by ON groups(created_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_groups_is_public ON groups(is_public)`,
+		`CREATE INDEX IF NOT EXISTS idx_groups_created_at ON groups(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_messages_group_id ON group_messages(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_messages_created_at ON group_messages(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_messages_user_id ON group_messages(user_id)`,
 	}
 
 	for _, query := range queries {
