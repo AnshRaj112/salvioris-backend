@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // CreateGroupRequest represents the request to create a group
 type CreateGroupRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // CreateGroupResponse represents the response after creating a group
@@ -23,6 +26,20 @@ type CreateGroupResponse struct {
 	Success bool                   `json:"success"`
 	Message string                 `json:"message"`
 	Group   map[string]interface{} `json:"group,omitempty"`
+}
+
+// UpdateGroupRequest represents the request to update an existing group
+type UpdateGroupRequest struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
+// Generic response for update/delete
+type GroupActionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
 }
 
 // GetGroupsResponse represents the response for getting groups
@@ -94,12 +111,44 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate required fields
-	if req.Name == "" {
+	if strings.TrimSpace(req.Name) == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(CreateGroupResponse{
 			Success: false,
 			Message: "Group name is required",
+		})
+		return
+	}
+
+	// Normalize and validate tags (optional)
+	var tags []string
+	for _, t := range req.Tags {
+		trimmed := strings.TrimSpace(t)
+		if trimmed != "" {
+			tags = append(tags, trimmed)
+		}
+	}
+
+	// Ensure group name is unique (case-insensitive)
+	var exists bool
+	if err := database.PostgresDB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM groups WHERE LOWER(name) = LOWER($1))
+	`, req.Name).Scan(&exists); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(CreateGroupResponse{
+			Success: false,
+			Message: "Failed to validate group name",
+		})
+		return
+	}
+	if exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(CreateGroupResponse{
+			Success: false,
+			Message: "A group with this name already exists",
 		})
 		return
 	}
@@ -121,9 +170,9 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	
 	_, err = database.PostgresDB.Exec(`
-		INSERT INTO groups (id, created_at, updated_at, name, description, created_by, is_public, member_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, groupID, now, now, req.Name, req.Description, *userID, true, 1)
+		INSERT INTO groups (id, created_at, updated_at, name, description, created_by, is_public, member_count, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, groupID, now, now, req.Name, req.Description, *userID, true, 1, pq.StringArray(tags))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -166,11 +215,225 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpdateGroup allows the creator to edit name/description/tags of a group
+func UpdateGroup(w http.ResponseWriter, r *http.Request) {
+	var req UpdateGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Invalid request body",
+		})
+		return
+	}
+
+	if strings.TrimSpace(req.ID) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Group ID is required",
+		})
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Group name is required",
+		})
+		return
+	}
+
+	groupID, err := uuid.Parse(req.ID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Invalid group ID",
+		})
+		return
+	}
+
+	// Get current user (must be creator)
+	userID, err := getCurrentUser(r)
+	if err != nil || userID == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "You must be signed in to update a group",
+		})
+		return
+	}
+
+	// Verify user is creator
+	var createdBy uuid.UUID
+	err = database.PostgresDB.QueryRow(`
+		SELECT created_by FROM groups WHERE id = $1
+	`, groupID).Scan(&createdBy)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(GroupActionResponse{
+				Success: false,
+				Message: "Group not found",
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to load group",
+		})
+		return
+	}
+	if createdBy != *userID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Only the group creator can update this group",
+		})
+		return
+	}
+
+	// Normalize tags
+	var tags []string
+	for _, t := range req.Tags {
+		trimmed := strings.TrimSpace(t)
+		if trimmed != "" {
+			tags = append(tags, trimmed)
+		}
+	}
+
+	// Ensure new name is unique across other groups
+	var exists bool
+	if err := database.PostgresDB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM groups WHERE LOWER(name) = LOWER($1) AND id <> $2)
+	`, req.Name, groupID).Scan(&exists); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to validate group name",
+		})
+		return
+	}
+	if exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "A group with this name already exists",
+		})
+		return
+	}
+
+	_, err = database.PostgresDB.Exec(`
+		UPDATE groups
+		SET name = $1,
+		    description = $2,
+		    tags = $3,
+		    updated_at = $4
+		WHERE id = $5 AND created_by = $6
+	`, req.Name, req.Description, pq.StringArray(tags), time.Now(), groupID, *userID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to update group",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GroupActionResponse{
+		Success: true,
+		Message: "Group updated successfully",
+	})
+}
+
+// DeleteGroup allows the creator to delete a group
+func DeleteGroup(w http.ResponseWriter, r *http.Request) {
+	groupIDStr := r.URL.Query().Get("group_id")
+	if strings.TrimSpace(groupIDStr) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Group ID is required",
+		})
+		return
+	}
+
+	groupID, err := uuid.Parse(groupIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Invalid group ID",
+		})
+		return
+	}
+
+	userID, err := getCurrentUser(r)
+	if err != nil || userID == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "You must be signed in to delete a group",
+		})
+		return
+	}
+
+	// Delete only if creator matches
+	res, err := database.PostgresDB.Exec(`
+		DELETE FROM groups WHERE id = $1 AND created_by = $2
+	`, groupID, *userID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to delete group",
+		})
+		return
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Only the group creator can delete this group",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GroupActionResponse{
+		Success: true,
+		Message: "Group deleted successfully",
+	})
+}
+
 // GetGroups handles getting all public groups
 func GetGroups(w http.ResponseWriter, r *http.Request) {
 	// Get query parameters
 	limitStr := r.URL.Query().Get("limit")
 	skipStr := r.URL.Query().Get("skip")
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
 
 	// Parse limit (default: 50)
 	limit := 50
@@ -188,11 +451,31 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build dynamic WHERE clause
+	conditions := []string{"g.is_public = TRUE"}
+	args := []interface{}{}
+	argIdx := 1
+
+	if search != "" {
+		conditions = append(conditions, "LOWER(g.name) LIKE $"+strconv.Itoa(argIdx))
+		args = append(args, "%"+strings.ToLower(search)+"%")
+		argIdx++
+	}
+	if tag != "" {
+		conditions = append(conditions, "$"+strconv.Itoa(argIdx)+" = ANY(g.tags)")
+		args = append(args, tag)
+		argIdx++
+	}
+
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
 	// Count total groups
 	var total int
-	err := database.PostgresDB.QueryRow(`
-		SELECT COUNT(*) FROM groups WHERE is_public = TRUE
-	`).Scan(&total)
+	countQuery := `
+		SELECT COUNT(*)
+		FROM groups g
+		` + whereClause
+	err := database.PostgresDB.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -205,15 +488,18 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get groups with pagination
-	rows, err := database.PostgresDB.Query(`
+	selectQuery := `
 		SELECT g.id, g.name, g.description, g.created_at, g.member_count, g.created_by,
-		       u.username
+		       u.username, COALESCE(g.tags, '{}'::text[])
 		FROM groups g
 		LEFT JOIN users u ON g.created_by = u.id
-		WHERE g.is_public = TRUE
+		` + whereClause + `
 		ORDER BY g.created_at DESC
-		LIMIT $1 OFFSET $2
-	`, limit, skip)
+		LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
+
+	selectArgs := append(append([]interface{}{}, args...), limit, skip)
+
+	rows, err := database.PostgresDB.Query(selectQuery, selectArgs...)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -233,8 +519,9 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		var memberCount int
 		var username sql.NullString
+		var tags pq.StringArray
 
-		err := rows.Scan(&groupID, &name, &description, &createdAt, &memberCount, &createdBy, &username)
+		err := rows.Scan(&groupID, &name, &description, &createdAt, &memberCount, &createdBy, &username, &tags)
 		if err != nil {
 			continue
 		}
@@ -247,6 +534,7 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 			"member_count": memberCount,
 			"created_by":   username.String,
 			"is_public":    true,
+			"tags":         []string(tags),
 		}
 
 		groups = append(groups, groupMap)

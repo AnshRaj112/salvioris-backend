@@ -7,6 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-chi/cors v1.2.1
 	github.com/google/uuid v1.2.0
+	github.com/gorilla/websocket v1.5.1
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.11.1
 	github.com/redis/go-redis/v9 v9.5.1
@@ -26,6 +27,7 @@ require (
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
+	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
 	golang.org/x/text v0.19.0 // indirect

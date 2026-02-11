@@ -188,6 +188,8 @@ func InitPostgresTables() error {
 			is_public BOOLEAN NOT NULL DEFAULT TRUE,
 			member_count INTEGER NOT NULL DEFAULT 1
 		)`,
+		// Ensure tags column exists for grouping (predefined tags)
+		`ALTER TABLE IF EXISTS groups ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'::text[]`,
 		
 		// Group members table (many-to-many relationship)
 		`CREATE TABLE IF NOT EXISTS group_members (
@@ -233,6 +235,7 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_groups_created_by ON groups(created_by)`,
 		`CREATE INDEX IF NOT EXISTS idx_groups_is_public ON groups(is_public)`,
 		`CREATE INDEX IF NOT EXISTS idx_groups_created_at ON groups(created_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_name_lower_unique ON groups(LOWER(name))`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_messages_group_id ON group_messages(group_id)`,

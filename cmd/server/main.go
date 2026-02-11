@@ -98,6 +98,9 @@ func main() {
 	}
 	defer database.Disconnect()
 
+	// Start global Redis chat subscriber for WebSocket fan-out
+	services.StartRedisChatSubscriber()
+
 	// Start violation cleanup service
 	// Cleans up violations older than 6 hours, runs every hour
 	// Note: This does NOT delete blocked IPs - those are kept separately
