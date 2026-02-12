@@ -64,23 +64,18 @@ func SetupRoutes(r *chi.Mux) {
 	// r.Post("/api/admin/signup", handlers.AdminSignup) // Disabled - use database directly
 	r.Post("/api/admin/signin", handlers.AdminSignin)
 	
-	// Group community forum routes
+	// Group community routes (Telegram-style community system)
 	r.Post("/api/groups", handlers.CreateGroup)
 	r.Get("/api/groups", handlers.GetGroups)
 	r.Put("/api/groups", handlers.UpdateGroup)
 	r.Delete("/api/groups", handlers.DeleteGroup)
 	r.Post("/api/groups/join", handlers.JoinGroup)
 	r.Get("/api/groups/members", handlers.GetGroupMembers)
-	// Legacy SQL-based group messages (kept for backward compatibility)
-	r.Get("/api/groups/messages", handlers.GetGroupMessages)
-	r.Post("/api/groups/messages", handlers.SendGroupMessage)
 
-	// Realtime chat API (MongoDB + Redis + WebSockets)
+	// Realtime chat API (MongoDB history + Redis Pub/Sub)
 	r.Get("/api/chat/history", handlers.LoadChatHistory)
-	r.Post("/api/chat/messages", handlers.SendChatMessageHTTP)
-	r.Post("/api/chat/read", handlers.MarkMessagesReadHTTP)
 
-	// WebSocket endpoint for realtime group chat
+	// WebSocket endpoint for realtime group chat (Discord-style gateway)
 	r.Get("/ws/chat", handlers.ChatWebSocket)
 }
 

@@ -168,11 +168,12 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 	// Create group
 	groupID := uuid.New()
 	now := time.Now()
+	slug := services.GenerateUniqueGroupSlug(req.Name)
 	
 	_, err = database.PostgresDB.Exec(`
-		INSERT INTO groups (id, created_at, updated_at, name, description, created_by, is_public, member_count, tags)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, groupID, now, now, req.Name, req.Description, *userID, true, 1, pq.StringArray(tags))
+		INSERT INTO groups (id, created_at, updated_at, name, slug, description, created_by, is_public, member_count, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, groupID, now, now, req.Name, slug, req.Description, *userID, true, 1, pq.StringArray(tags))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -183,10 +184,10 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add creator as member
+	// Add creator as member (admin role). Creator must NOT need to manually join.
 	_, err = database.PostgresDB.Exec(`
-		INSERT INTO group_members (id, group_id, user_id, joined_at)
-		VALUES (gen_random_uuid(), $1, $2, $3)
+		INSERT INTO group_members (id, group_id, user_id, role, joined_at)
+		VALUES (gen_random_uuid(), $1, $2, 'admin', $3)
 		ON CONFLICT (group_id, user_id) DO NOTHING
 	`, groupID, *userID, now)
 	if err != nil {
@@ -199,7 +200,8 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 	groupMap := map[string]interface{}{
 		"id":           groupID.String(),
 		"name":         req.Name,
-		"description": req.Description,
+		"slug":         slug,
+		"description":  req.Description,
 		"created_by":   username,
 		"created_at":   now,
 		"member_count": 1,

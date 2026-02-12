@@ -2,222 +2,166 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/google/uuid"
 )
 
-// ChatWebSocketUpgrade is the shared upgrader for chat WebSocket connections.
-var chatUpgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		// CORS for WebSocket is handled at the HTTP layer already.
-		// Here we allow all origins; you can tighten this by checking r.Header["Origin"].
+		// CORS is handled at the HTTP layer already.
 		return true
 	},
 }
 
-// ChatClientMessage represents messages coming from the frontend over WebSocket.
-type ChatClientMessage struct {
-	Type      string `json:"type"` // "message", "typing_start", "typing_stop", "read", "ping"
-	GroupID   string `json:"group_id"`
-	Text      string `json:"text,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
+// wsMessage is the client<->server WebSocket payload.
+type wsMessage struct {
+	Type    string   `json:"type"`
+	GroupID string   `json:"group_id,omitempty"`
+	Groups  []string `json:"groups,omitempty"`
+	Text    string   `json:"text,omitempty"`
 }
 
-// ChatWebSocket handles real-time group chat over WebSocket.
-// Authentication is done via the existing session token (Authorization: Bearer <token>).
-// Each connection is currently bound to a single group via the `group_id` query parameter.
+// ChatWebSocket establishes a single Discord-style WebSocket connection per user.
+// Client sends "subscribe"/"unsubscribe"/"message" events as documented in CHAT_SYSTEM_REDESIGN.md.
 func ChatWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Authenticate user via session token
-	token := extractBearerToken(r.Header.Get("Authorization"))
+	// WebSocket connections from browsers can't set custom headers easily,
+	// so we support authentication via query parameter `token` (session_token)
+	// as well as the standard Authorization Bearer header for flexibility.
+	token := r.URL.Query().Get("token")
 	if token == "" {
-		// Fallback: allow token via query parameter for browser WebSocket clients
-		token = r.URL.Query().Get("token")
-		if token == "" {
-			http.Error(w, "missing session token", http.StatusUnauthorized)
-			return
-		}
+		// Fallback to Authorization header (used by HTTP APIs)
+		token = extractBearerToken(r.Header.Get("Authorization"))
 	}
 
-	userID, ok, err := services.ValidateSession(token)
+	userUUID, ok, err := services.ValidateSession(token)
 	if err != nil || !ok {
-		http.Error(w, "invalid session token", http.StatusUnauthorized)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	groupID := r.URL.Query().Get("group_id")
-	if groupID == "" {
-		http.Error(w, "group_id is required", http.StatusBadRequest)
-		return
-	}
-
-	// Ensure user is a member of the group (PostgreSQL)
-	if !isUserMemberOfGroup(userID, groupID) {
-		http.Error(w, "you must be a member of this group", http.StatusForbidden)
-		return
-	}
-
-	username, _ := services.GetUsernameByID(userID.String())
-
-	conn, err := chatUpgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wsConn := &wsConnWrapper{Conn: conn}
+	uc := services.RegisterUserConnection(userUUID, wsConn)
 
-	// Mark user as online
-	services.SetUserPresence(ctx, userID, "online")
-
-	// Subscribe to local events for this group (fed by Redis subscriber)
-	eventsCh, unsubscribe := services.DefaultChatHubSubscribe(groupID)
-	defer unsubscribe()
-
-	// Writer goroutine: forward events from hub to this WebSocket connection
-	go func() {
-		for evt := range eventsCh {
-			// Deliver only events relevant to this group (already filtered)
-			if err := conn.WriteJSON(evt); err != nil {
-				return
-			}
-		}
+	// Ensure presence is cleaned up.
+	defer func() {
+		services.UnregisterUserConnection(userUUID)
+		conn.Close()
 	}()
 
-	// Reader loop: handle client messages
-	conn.SetReadLimit(64 * 1024)
-	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-	conn.SetPongHandler(func(appData string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		return nil
-	})
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	// Start Redis subscriber (no-op if already started).
+	services.StartRedisChatSubscriber(ctx)
 
 	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			// On disconnect, rely on TTL-based presence expiry
+		var msg wsMessage
+		if err := conn.ReadJSON(&msg); err != nil {
 			return
-		}
-
-		var msg ChatClientMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			continue
-		}
-
-		msg.GroupID = strings.TrimSpace(msg.GroupID)
-		if msg.GroupID == "" {
-			msg.GroupID = groupID
 		}
 
 		switch msg.Type {
+		case "subscribe":
+			handleSubscribe(userUUID, uc, msg)
+		case "unsubscribe":
+			handleUnsubscribe(userUUID, uc, msg)
 		case "message":
-			handleIncomingChatMessage(ctx, conn, userID, username, msg)
-		case "typing_start":
-			_ = services.PublishChatEvent(ctx, services.ChatEvent{
-				Type:      services.EventTypeTypingStart,
-				GroupID:   groupID,
-				UserID:    userID.String(),
-				Username:  username,
-				Timestamp: time.Now().UTC(),
-			})
-		case "typing_stop":
-			_ = services.PublishChatEvent(ctx, services.ChatEvent{
-				Type:      services.EventTypeTypingStop,
-				GroupID:   groupID,
-				UserID:    userID.String(),
-				Username:  username,
-				Timestamp: time.Now().UTC(),
-			})
-		case "read":
-			if msg.MessageID != "" {
-				_ = services.MarkMessagesRead(ctx, userID, username, []models.ChatMessageReadUpdate{
-					{
-						MessageID: msg.MessageID,
-						GroupID:   groupID,
-					},
-				})
-			}
+			handleIncomingChatMessage(ctx, userUUID, msg)
 		case "ping":
-			// Refresh presence TTL
-			services.SetUserPresence(ctx, userID, "online")
+			_ = conn.WriteJSON(map[string]string{"type": "pong"})
 		default:
-			// Ignore unknown types
+			_ = conn.WriteJSON(map[string]string{
+				"type":  "error",
+				"error": "unknown message type",
+			})
 		}
 	}
 }
 
-// handleIncomingChatMessage validates, persists to MongoDB, publishes via Redis,
-// and sends an acknowledgement back to the sender.
-func handleIncomingChatMessage(
-	ctx context.Context,
-	conn *websocket.Conn,
-	userID uuid.UUID,
-	username string,
-	msg ChatClientMessage,
-) {
-	text := strings.TrimSpace(msg.Text)
-	if text == "" || msg.GroupID == "" {
-		return
-	}
-
-	chatMsg := &models.ChatMessage{
-		GroupID:        msg.GroupID,
-		SenderID:       userID.String(),
-		SenderUsername: username,
-		Text:           text,
-		CreatedAt:      time.Now().UTC(),
-		Status:         models.MessageStatusSent,
-	}
-
-	saved, err := services.SaveChatMessage(ctx, chatMsg)
-	if err != nil {
-		// Send error event back
-		_ = conn.WriteJSON(services.ChatEvent{
-			Type:      services.EventTypeError,
-			GroupID:   msg.GroupID,
-			Error:     "failed to persist message",
-			Timestamp: time.Now().UTC(),
-		})
-		return
-	}
-
-	// Publish message event
-	evt := services.ChatEvent{
-		Type:    services.EventTypeMessage,
-		GroupID: msg.GroupID,
-		Message: saved,
-	}
-	_ = services.PublishChatEvent(ctx, evt)
-
-	// Send message acknowledgement specifically to sender
-	ack := services.ChatEvent{
-		Type:    services.EventTypeMessageAck,
-		GroupID: msg.GroupID,
-		Message: saved,
-	}
-	_ = conn.WriteJSON(ack)
+// wsConnWrapper adapts *websocket.Conn to services.ChatConn.
+type wsConnWrapper struct {
+	Conn *websocket.Conn
 }
 
-// isUserMemberOfGroup checks membership in the SQL group_members table.
-func isUserMemberOfGroup(userID uuid.UUID, groupID string) bool {
-	var exists bool
-	err := database.PostgresDB.QueryRow(`
-		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
-	`, groupID, userID).Scan(&exists)
-	if err != nil {
-		return false
+func (w *wsConnWrapper) WriteJSON(v interface{}) error {
+	return w.Conn.WriteJSON(v)
+}
+
+func (w *wsConnWrapper) ReadJSON(dest interface{}) error {
+	return w.Conn.ReadJSON(dest)
+}
+
+func (w *wsConnWrapper) Close() error {
+	return w.Conn.Close()
+}
+
+func handleSubscribe(userID uuid.UUID, uc *services.UserConnection, msg wsMessage) {
+	targets := msg.Groups
+	if msg.GroupID != "" {
+		targets = append(targets, msg.GroupID)
 	}
-	return exists
+	for _, g := range targets {
+		if g == "" {
+			continue
+		}
+		services.SubscribeUserToGroup(userID, g)
+	}
+}
+
+func handleUnsubscribe(userID uuid.UUID, uc *services.UserConnection, msg wsMessage) {
+	targets := msg.Groups
+	if msg.GroupID != "" {
+		targets = append(targets, msg.GroupID)
+	}
+	for _, g := range targets {
+		if g == "" {
+			continue
+		}
+		services.UnsubscribeUserFromGroup(userID, g)
+	}
+}
+
+// handleIncomingChatMessage validates membership, publishes via Redis, and persists to Mongo.
+func handleIncomingChatMessage(ctx context.Context, userID uuid.UUID, msg wsMessage) {
+	if msg.GroupID == "" || msg.Text == "" {
+		return
+	}
+
+	// Validate membership (creator implicitly has membership).
+	ok, username := services.CanUserSendToGroup(userID.String(), msg.GroupID)
+	if !ok {
+		return
+	}
+
+	event := services.ChatEvent{
+		Type:      "message",
+		GroupID:   msg.GroupID,
+		SenderID:  userID.String(),
+		Username:  username,
+		Message:   msg.Text,
+		Timestamp: time.Now().UTC(),
+	}
+
+	// Publish to Redis FIRST. All instances receive, then fan-out.
+	_ = services.PublishChatEvent(ctx, event)
+
+	// Persist asynchronously to Mongo.
+	services.SaveChatMessageAsync(services.ChatMessage{
+		GroupID:   msg.GroupID,
+		SenderID:  userID.String(),
+		Message:   msg.Text,
+		Timestamp: event.Timestamp,
+		Status:    "delivered",
+	})
 }
 
 

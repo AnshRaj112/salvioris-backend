@@ -8,264 +8,187 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
-	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-const (
-	chatGroupChannelPrefix   = "chat:group:"
-	typingGroupChannelPrefix = "typing:group:"
-	presenceKeyPrefix        = "presence:"
-
-	// PresenceTTL defines how long a user is considered online without heartbeat.
-	PresenceTTL = 60 * time.Second
-)
-
-// ChatEventType describes the kind of realtime event flowing over Redis/WebSockets.
-type ChatEventType string
-
-const (
-	EventTypeMessage      ChatEventType = "message"
-	EventTypeMessageAck   ChatEventType = "message_ack"
-	EventTypeTypingStart  ChatEventType = "typing_start"
-	EventTypeTypingStop   ChatEventType = "typing_stop"
-	EventTypeReadReceipt  ChatEventType = "read_receipt"
-	EventTypePresence     ChatEventType = "presence"
-	EventTypeError        ChatEventType = "error"
-	EventTypeServerNotice ChatEventType = "server_notice"
-)
-
-// ChatEvent is the generic payload sent over Redis and WebSockets.
+// ChatEvent represents the payload broadcast over Redis and WebSocket.
 type ChatEvent struct {
-	Type      ChatEventType        `json:"type"`
-	GroupID   string               `json:"group_id,omitempty"`
-	Message   *models.ChatMessage  `json:"message,omitempty"`
-	MessageID string               `json:"message_id,omitempty"`
-	UserID    string               `json:"user_id,omitempty"`
-	Username  string               `json:"username,omitempty"`
-	Status    models.ChatMessageStatus `json:"status,omitempty"`
-	Timestamp time.Time            `json:"timestamp"`
-	Error     string               `json:"error,omitempty"`
+	Type      string    `json:"type"`
+	GroupID   string    `json:"group_id,omitempty"`
+	SenderID  string    `json:"sender_id,omitempty"`
+	Username  string    `json:"username,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
-// ChatHub manages active WebSocket connections per group in-process.
-// It works together with Redis Pub/Sub so multiple backend instances stay in sync.
+// UserConnection tracks a single user's WebSocket connection and group subscriptions.
+type UserConnection struct {
+	UserID       uuid.UUID
+	Conn         ChatConn
+	SubscribedTo map[string]struct{}
+	mu           sync.RWMutex
+}
+
+// ChatConn is the minimal interface our WebSocket implementation must satisfy.
+type ChatConn interface {
+	WriteJSON(v interface{}) error
+	ReadJSON(dest interface{}) error
+	Close() error
+}
+
+// ChatHub is a global registry of user connections.
 type ChatHub struct {
-	mu        sync.RWMutex
-	consumers map[string][]chan ChatEvent // key: groupID
+	mu          sync.RWMutex
+	connections map[uuid.UUID]*UserConnection
 }
 
 var (
-	defaultChatHub = &ChatHub{
-		consumers: make(map[string][]chan ChatEvent),
-	}
+	chatHub      = &ChatHub{connections: make(map[uuid.UUID]*UserConnection)}
+	redisStarted sync.Once
 )
 
-// DefaultChatHubSubscribe is a small wrapper used by handlers to subscribe to a group.
-func DefaultChatHubSubscribe(groupID string) (<-chan ChatEvent, func()) {
-	return defaultChatHub.SubscribeGroup(groupID)
-}
-
-// SubscribeGroup returns a channel that receives ChatEvents for a group.
-// The caller MUST call the returned unsubscribe function when done.
-func (h *ChatHub) SubscribeGroup(groupID string) (<-chan ChatEvent, func()) {
-	ch := make(chan ChatEvent, 64)
-
-	h.mu.Lock()
-	h.consumers[groupID] = append(h.consumers[groupID], ch)
-	h.mu.Unlock()
-
-	unsubscribe := func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		list := h.consumers[groupID]
-		for i, c := range list {
-			if c == ch {
-				// Remove and close channel
-				h.consumers[groupID] = append(list[:i], list[i+1:]...)
-				close(c)
-				break
-			}
-		}
-		if len(h.consumers[groupID]) == 0 {
-			delete(h.consumers, groupID)
-		}
+// RegisterUserConnection registers or replaces a user's connection.
+func RegisterUserConnection(userID uuid.UUID, conn ChatConn) *UserConnection {
+	uc := &UserConnection{
+		UserID:       userID,
+		Conn:         conn,
+		SubscribedTo: make(map[string]struct{}),
 	}
 
-	return ch, unsubscribe
+	chatHub.mu.Lock()
+	chatHub.connections[userID] = uc
+	chatHub.mu.Unlock()
+
+	return uc
 }
 
-// fanOutToLocalConsumers sends an event to all in-process subscribers for the group.
-func (h *ChatHub) fanOutToLocalConsumers(evt ChatEvent) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+// UnregisterUserConnection removes a user's connection.
+func UnregisterUserConnection(userID uuid.UUID) {
+	chatHub.mu.Lock()
+	delete(chatHub.connections, userID)
+	chatHub.mu.Unlock()
+}
 
-	consumers := h.consumers[evt.GroupID]
-	for _, ch := range consumers {
-		select {
-		case ch <- evt:
-		default:
-			// Slow consumer; drop event to avoid blocking hub
-		}
+// SubscribeUserToGroup tracks a subscription in-memory for fan-out.
+func SubscribeUserToGroup(userID uuid.UUID, groupID string) {
+	chatHub.mu.RLock()
+	uc, ok := chatHub.connections[userID]
+	chatHub.mu.RUnlock()
+	if !ok {
+		return
 	}
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	uc.SubscribedTo[groupID] = struct{}{}
 }
 
-// StartRedisChatSubscriber starts a long-lived goroutine that listens to Redis Pub/Sub
-// for all group chat and typing channels and fans out events to local consumers.
-func StartRedisChatSubscriber() {
-	if database.RedisClient == nil {
-		log.Println("chat_realtime: Redis client not initialized; skipping subscriber")
+// UnsubscribeUserFromGroup removes a subscription.
+func UnsubscribeUserFromGroup(userID uuid.UUID, groupID string) {
+	chatHub.mu.RLock()
+	uc, ok := chatHub.connections[userID]
+	chatHub.mu.RUnlock()
+	if !ok {
+		return
+	}
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	delete(uc.SubscribedTo, groupID)
+}
+
+// FanOutChatEvent sends an event to all local connections subscribed to the group.
+func FanOutChatEvent(event ChatEvent) {
+	if event.GroupID == "" {
 		return
 	}
 
-	ctx := context.Background()
+	chatHub.mu.RLock()
+	defer chatHub.mu.RUnlock()
 
-	// Pattern subscribe to both chat and typing channels for all groups.
-	pubsub := database.RedisClient.PSubscribe(ctx, chatGroupChannelPrefix+"*", typingGroupChannelPrefix+"*")
-
-	go func() {
-		defer pubsub.Close()
-		for {
-			msg, err := pubsub.ReceiveMessage(ctx)
-			if err != nil {
-				if err == context.Canceled {
-					return
-				}
-				log.Printf("chat_realtime: Redis PSubscribe error: %v", err)
-				time.Sleep(time.Second)
-				continue
-			}
-
-			var evt ChatEvent
-			if err := json.Unmarshal([]byte(msg.Payload), &evt); err != nil {
-				log.Printf("chat_realtime: failed to unmarshal event: %v", err)
-				continue
-			}
-
-			// Extract group ID from channel name if missing
-			if evt.GroupID == "" {
-				if len(msg.Channel) > len(chatGroupChannelPrefix) && msg.Channel[:len(chatGroupChannelPrefix)] == chatGroupChannelPrefix {
-					evt.GroupID = msg.Channel[len(chatGroupChannelPrefix):]
-				} else if len(msg.Channel) > len(typingGroupChannelPrefix) && msg.Channel[:len(typingGroupChannelPrefix)] == typingGroupChannelPrefix {
-					evt.GroupID = msg.Channel[len(typingGroupChannelPrefix):]
-				}
-			}
-
-			defaultChatHub.fanOutToLocalConsumers(evt)
+	for _, uc := range chatHub.connections {
+		uc.mu.RLock()
+		_, subscribed := uc.SubscribedTo[event.GroupID]
+		uc.mu.RUnlock()
+		if !subscribed {
+			continue
 		}
-	}()
+
+		// Non-blocking best-effort send.
+		go func(c ChatConn) {
+			if err := c.WriteJSON(event); err != nil {
+				log.Printf("error writing chat event to websocket: %v", err)
+			}
+		}(uc.Conn)
+	}
 }
 
-// PublishChatEvent publishes a chat-related event to the appropriate Redis channel.
-func PublishChatEvent(ctx context.Context, evt ChatEvent) error {
-	if database.RedisClient == nil {
-		return nil
+// StartRedisChatSubscriber ensures a single shared Redis listener per instance.
+func StartRedisChatSubscriber(ctx context.Context) {
+	redisStarted.Do(func() {
+		go runRedisSubscriber(ctx)
+	})
+}
+
+func runRedisSubscriber(ctx context.Context) {
+	client := database.RedisClient
+	if client == nil {
+		log.Println("Redis client not initialized; chat subscriber not started")
+		return
 	}
-	if evt.Timestamp.IsZero() {
-		evt.Timestamp = time.Now().UTC()
+
+	backoff := time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		func() {
+			pubsub := client.PSubscribe(ctx, "chat:group:*")
+			defer pubsub.Close()
+
+			log.Println("✅ Chat Redis subscriber started (pattern: chat:group:*)")
+
+			for {
+				msg, err := pubsub.ReceiveMessage(ctx)
+				if err != nil {
+					log.Printf("Redis subscriber error: %v", err)
+					time.Sleep(backoff)
+					backoff *= 2
+					if backoff > 30*time.Second {
+						backoff = 30 * time.Second
+					}
+					return
+				}
+
+				backoff = time.Second
+
+				var event ChatEvent
+				if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
+					log.Printf("failed to unmarshal chat event: %v", err)
+					continue
+				}
+
+				// Fan out to local connections.
+				FanOutChatEvent(event)
+			}
+		}()
 	}
-	payload, err := json.Marshal(evt)
+}
+
+// PublishChatEvent publishes an event to Redis; called when a message is received over WebSocket.
+func PublishChatEvent(ctx context.Context, event ChatEvent) error {
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	data, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
 
-	var channel string
-	switch evt.Type {
-	case EventTypeMessage, EventTypeMessageAck, EventTypeReadReceipt, EventTypePresence:
-		channel = chatGroupChannelPrefix + evt.GroupID
-	case EventTypeTypingStart, EventTypeTypingStop:
-		channel = typingGroupChannelPrefix + evt.GroupID
-	default:
-		// Default to chat channel
-		channel = chatGroupChannelPrefix + evt.GroupID
-	}
-
-	return database.RedisClient.Publish(ctx, channel, payload).Err()
-}
-
-// SaveChatMessage persists a new message to MongoDB and returns the saved document.
-func SaveChatMessage(ctx context.Context, msg *models.ChatMessage) (*models.ChatMessage, error) {
-	if msg.ID.IsZero() {
-		msg.ID = primitive.NewObjectID()
-	}
-	if msg.CreatedAt.IsZero() {
-		msg.CreatedAt = time.Now().UTC()
-	}
-	if msg.Status == "" {
-		msg.Status = models.MessageStatusSent
-	}
-
-	coll := database.DB.Collection("chat_messages")
-	_, err := coll.InsertOne(ctx, msg)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-// MarkMessagesRead updates MongoDB to mark messages as read for a specific user.
-// It also publishes read-receipt events via Redis.
-func MarkMessagesRead(ctx context.Context, userID uuid.UUID, username string, updates []models.ChatMessageReadUpdate) error {
-	if len(updates) == 0 {
-		return nil
-	}
-
-	coll := database.DB.Collection("chat_messages")
-
-	for _, u := range updates {
-		objID, err := primitive.ObjectIDFromHex(u.MessageID)
-		if err != nil {
-			continue
-		}
-
-		filter := bson.M{
-			"_id":      objID,
-			"group_id": u.GroupID,
-		}
-		update := bson.M{
-			"$addToSet": bson.M{
-				"read_by": userID.String(),
-			},
-			"$set": bson.M{
-				"status": models.MessageStatusRead,
-			},
-		}
-
-		if _, err := coll.UpdateOne(ctx, filter, update); err != nil {
-			log.Printf("chat_realtime: failed to mark message read: %v", err)
-			continue
-		}
-
-		// Publish read receipt
-		evt := ChatEvent{
-			Type:      EventTypeReadReceipt,
-			GroupID:   u.GroupID,
-			MessageID: u.MessageID,
-			UserID:    userID.String(),
-			Username:  username,
-			Status:    models.MessageStatusRead,
-			Timestamp: time.Now().UTC(),
-		}
-		if err := PublishChatEvent(ctx, evt); err != nil {
-			log.Printf("chat_realtime: failed to publish read receipt: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// SetUserPresence marks a user as online with a TTL using Redis.
-func SetUserPresence(ctx context.Context, userID uuid.UUID, status string) {
-	if database.RedisClient == nil {
-		return
-	}
-	key := presenceKeyPrefix + userID.String()
-	err := database.RedisClient.Set(ctx, key, status, PresenceTTL).Err()
-	if err != nil {
-		log.Printf("chat_realtime: failed to set presence: %v", err)
-	}
+	channel := "chat:group:" + event.GroupID
+	return database.RedisClient.Publish(ctx, channel, data).Err()
 }
 
 

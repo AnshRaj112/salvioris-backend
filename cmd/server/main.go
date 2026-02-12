@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
-	
+
 	"github.com/joho/godotenv"
 
 	"github.com/AnshRaj112/serenify-backend/internal/config"
@@ -98,8 +99,12 @@ func main() {
 	}
 	defer database.Disconnect()
 
-	// Start global Redis chat subscriber for WebSocket fan-out
-	services.StartRedisChatSubscriber()
+	// Ensure MongoDB indexes for chat history
+	if err := services.EnsureChatIndexes(context.Background()); err != nil {
+		log.Printf("⚠️  WARNING: failed to ensure MongoDB chat indexes: %v", err)
+	} else {
+		log.Println("✅ MongoDB chat indexes ensured")
+	}
 
 	// Start violation cleanup service
 	// Cleans up violations older than 6 hours, runs every hour

@@ -17,6 +17,16 @@ func ConnectRedis(redisURI string) error {
 		return err
 	}
 
+	// Configure connection pool and timeouts for better resilience
+	opt.PoolSize = 10                     // Connection pool size
+	opt.MinIdleConns = 5                  // Minimum idle connections
+	opt.MaxRetries = 3                    // Retry failed commands up to 3 times
+	opt.DialTimeout = 5 * time.Second     // Timeout for establishing connection
+	opt.ReadTimeout = 3 * time.Second     // Timeout for read operations
+	opt.WriteTimeout = 3 * time.Second    // Timeout for write operations
+	opt.PoolTimeout = 4 * time.Second     // Timeout for getting connection from pool
+	opt.ConnMaxIdleTime = 5 * time.Minute // Close idle connections after 5 minutes
+
 	RedisClient = redis.NewClient(opt)
 
 	// Test connection
@@ -38,4 +48,3 @@ func DisconnectRedis() error {
 	}
 	return nil
 }
-

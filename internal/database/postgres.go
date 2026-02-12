@@ -13,7 +13,7 @@ var PostgresDB *sql.DB
 // ConnectPostgres connects to PostgreSQL database
 func ConnectPostgres(postgresURI string) error {
 	var err error
-	
+
 	PostgresDB, err = sql.Open("postgres", postgresURI)
 	if err != nil {
 		return err
@@ -30,7 +30,7 @@ func ConnectPostgres(postgresURI string) error {
 	}
 
 	log.Println("✅ Connected to PostgreSQL")
-	
+
 	// Initialize tables
 	if err = InitPostgresTables(); err != nil {
 		return err
@@ -50,7 +50,7 @@ func InitPostgresTables() error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
-		
+
 		// User recovery table (PRIVATE: Encrypted recovery data)
 		`CREATE TABLE IF NOT EXISTS user_recovery (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -61,7 +61,7 @@ func InitPostgresTables() error {
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			UNIQUE(user_id)
 		)`,
-		
+
 		// User devices table (SECURITY: Device tracking for support)
 		`CREATE TABLE IF NOT EXISTS user_devices (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -72,7 +72,7 @@ func InitPostgresTables() error {
 			last_used TIMESTAMP NOT NULL DEFAULT NOW(),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
-		
+
 		// Therapists table
 		`CREATE TABLE IF NOT EXISTS therapists (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -96,7 +96,7 @@ func InitPostgresTables() error {
 			degree_image_path TEXT,
 			is_approved BOOLEAN NOT NULL DEFAULT FALSE
 		)`,
-		
+
 		// Violations table
 		`CREATE TABLE IF NOT EXISTS violations (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -108,7 +108,7 @@ func InitPostgresTables() error {
 			vent_id VARCHAR(255),
 			action_taken VARCHAR(50) NOT NULL
 		)`,
-		
+
 		// Blocked IPs table
 		`CREATE TABLE IF NOT EXISTS blocked_ips (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -118,7 +118,7 @@ func InitPostgresTables() error {
 			reason TEXT NOT NULL,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
-		
+
 		// Password reset tokens table
 		`CREATE TABLE IF NOT EXISTS password_reset_tokens (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,7 +128,7 @@ func InitPostgresTables() error {
 			used BOOLEAN NOT NULL DEFAULT FALSE,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
-		
+
 		// Feedbacks table
 		`CREATE TABLE IF NOT EXISTS feedbacks (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -136,7 +136,7 @@ func InitPostgresTables() error {
 			feedback TEXT NOT NULL,
 			ip_address VARCHAR(255)
 		)`,
-		
+
 		// Contact us table
 		`CREATE TABLE IF NOT EXISTS contact_us (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,7 +146,7 @@ func InitPostgresTables() error {
 			message TEXT NOT NULL,
 			ip_address VARCHAR(255)
 		)`,
-		
+
 		// User waitlist table
 		`CREATE TABLE IF NOT EXISTS user_waitlist (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -155,7 +155,7 @@ func InitPostgresTables() error {
 			email VARCHAR(255) NOT NULL,
 			ip_address VARCHAR(255)
 		)`,
-		
+
 		// Therapist waitlist table
 		`CREATE TABLE IF NOT EXISTS therapist_waitlist (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -165,7 +165,7 @@ func InitPostgresTables() error {
 			phone VARCHAR(50),
 			ip_address VARCHAR(255)
 		)`,
-		
+
 		// Admins table
 		`CREATE TABLE IF NOT EXISTS admins (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -176,30 +176,32 @@ func InitPostgresTables() error {
 			password_hash VARCHAR(255) NOT NULL,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
-		
+
 		// Groups table (public community groups)
+		// NOTE: name and slug must both be globally unique (case-insensitive for name).
+		// slug is used for shareable URLs: /community/group/<slug>
 		`CREATE TABLE IF NOT EXISTS groups (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			name VARCHAR(255) NOT NULL,
+			slug VARCHAR(255) NOT NULL UNIQUE,
 			description TEXT,
 			created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			is_public BOOLEAN NOT NULL DEFAULT TRUE,
-			member_count INTEGER NOT NULL DEFAULT 1
+			member_count INTEGER NOT NULL DEFAULT 1,
+			tags TEXT[] DEFAULT '{}'::text[]
 		)`,
-		// Ensure tags column exists for grouping (predefined tags)
-		`ALTER TABLE IF EXISTS groups ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'::text[]`,
-		
 		// Group members table (many-to-many relationship)
+		// role: "admin" | "member"
 		`CREATE TABLE IF NOT EXISTS group_members (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
 			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role VARCHAR(20) NOT NULL DEFAULT 'member',
 			joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			UNIQUE(group_id, user_id)
 		)`,
-		
 		// Group messages table
 		`CREATE TABLE IF NOT EXISTS group_messages (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -208,7 +210,7 @@ func InitPostgresTables() error {
 			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			message TEXT NOT NULL
 		)`,
-		
+
 		// Create indexes for better performance
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username))`,
@@ -236,6 +238,7 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_groups_is_public ON groups(is_public)`,
 		`CREATE INDEX IF NOT EXISTS idx_groups_created_at ON groups(created_at)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_name_lower_unique ON groups(LOWER(name))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_slug_lower_unique ON groups(LOWER(slug))`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_messages_group_id ON group_messages(group_id)`,
@@ -260,4 +263,3 @@ func DisconnectPostgres() error {
 	}
 	return nil
 }
-
