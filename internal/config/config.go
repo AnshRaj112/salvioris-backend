@@ -44,7 +44,7 @@ func Load() *Config {
 		allowedHost = strings.TrimSpace(allowedHost)
 	}
 
-	// CORS: allow multiple origins so production frontend (e.g. https://salvioris.com) works
+	// CORS: allow multiple origins so production frontend (e.g. https://www.salvioris.com) works
 	allowedOrigins := parseOrigins(getEnv("ALLOWED_ORIGINS", ""))
 	if len(allowedOrigins) == 0 {
 		for _, u := range []string{getEnv("FRONTEND_URL", "http://localhost:3000"), getEnv("FRONTEND_URL_2", ""), getEnv("FRONTEND_URL_3", "")} {
@@ -54,9 +54,21 @@ func Load() *Config {
 			}
 		}
 	}
-	// Production: if backend host is e.g. backend.salvioris.com, allow https://salvioris.com and https://www.salvioris.com so OPTIONS preflight doesn't get 403
-	if env == "production" && allowedHost != "" {
-		parts := strings.Split(allowedHost, ".")
+	// When HOST is a backend host (e.g. backend.salvioris.com), always add https://domain and https://www.domain
+	// so OPTIONS preflight gets 200 even if ENV isn't set on the server
+	hostForCORS := host
+	for _, prefix := range []string{"https://", "http://"} {
+		hostForCORS = strings.TrimPrefix(hostForCORS, prefix)
+	}
+	if idx := strings.Index(hostForCORS, "/"); idx != -1 {
+		hostForCORS = hostForCORS[:idx]
+	}
+	if idx := strings.Index(hostForCORS, ":"); idx != -1 {
+		hostForCORS = hostForCORS[:idx]
+	}
+	hostForCORS = strings.TrimSpace(hostForCORS)
+	if hostForCORS != "" && hostForCORS != "localhost" && !strings.HasPrefix(hostForCORS, "localhost:") {
+		parts := strings.Split(hostForCORS, ".")
 		if len(parts) >= 2 {
 			domain := strings.Join(parts[1:], ".")
 			for _, origin := range []string{"https://" + domain, "https://www." + domain} {

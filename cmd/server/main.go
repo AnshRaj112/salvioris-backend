@@ -16,7 +16,6 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 )
 
 func main() {
@@ -115,16 +114,8 @@ func main() {
 	// Setup router
 	r := chi.NewRouter()
 
-	// Setup CORS - Allow all configured origins (production frontend + localhost)
-	corsMiddleware := cors.New(cors.Options{
-		AllowedOrigins:   cfg.AllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
-		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	})
-	r.Use(corsMiddleware.Handler)
+	// Custom CORS: set headers and respond to OPTIONS with 200 so preflight never gets 403
+	r.Use(middleware.CORS(cfg.AllowedOrigins))
 
 	// Production: SecurityHeaders → HostCheck (HOST) → GlobalRateLimit → LoginRateLimit
 	// Non-production: Redis-based rate limit only
