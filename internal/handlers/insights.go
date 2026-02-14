@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -97,6 +98,7 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 	if from.After(to) {
 		from, to = to, from
 	}
+	toEnd := to.AddDate(0, 0, 1) // exclusive upper bound (end of "to" day)
 
 	// New users per day
 	type dayCount struct {
@@ -107,11 +109,12 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 	rows, err := database.PostgresDB.Query(`
 		SELECT (created_at)::date AS d, COUNT(*)
 		FROM users
-		WHERE created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
+		WHERE created_at >= $1 AND created_at < $2
 		GROUP BY (created_at)::date
 		ORDER BY d
-	`, from, to)
+	`, from, toEnd)
 	if err != nil {
+		log.Printf("[GetInsights] Failed to fetch new users: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to fetch new users"})
 		return
@@ -134,10 +137,10 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 	rows, err = database.PostgresDB.Query(`
 		SELECT (created_at)::date AS d, COUNT(DISTINCT user_id)
 		FROM activity_events
-		WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
+		WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2
 		GROUP BY (created_at)::date
 		ORDER BY d
-	`, from, to)
+	`, from, toEnd)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to fetch active users"})
@@ -162,11 +165,11 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 		SELECT COUNT(*) FROM (
 			SELECT user_id
 			FROM activity_events
-			WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
+			WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2
 			GROUP BY user_id
 			HAVING COUNT(DISTINCT (created_at)::date) >= 2
 		) t
-	`, from, to).Scan(&recurringCount)
+	`, from, toEnd).Scan(&recurringCount)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to fetch recurring users"})
@@ -182,11 +185,11 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 	rows, err = database.PostgresDB.Query(`
 		SELECT path, COUNT(*) AS c
 		FROM activity_events
-		WHERE created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
+		WHERE created_at >= $1 AND created_at < $2
 		GROUP BY path
 		ORDER BY c DESC
 		LIMIT 20
-	`, from, to)
+	`, from, toEnd)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to fetch top pages"})
@@ -209,15 +212,15 @@ func GetInsights(w http.ResponseWriter, r *http.Request) {
 	var totalNewUsers int
 	_ = database.PostgresDB.QueryRow(`
 		SELECT COUNT(*) FROM users
-		WHERE created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
-	`, from, to).Scan(&totalNewUsers)
+		WHERE created_at >= $1 AND created_at < $2
+	`, from, toEnd).Scan(&totalNewUsers)
 
 	// Total active users (distinct) in period
 	var totalActiveUsers int
 	_ = database.PostgresDB.QueryRow(`
 		SELECT COUNT(DISTINCT user_id) FROM activity_events
-		WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2 + INTERVAL '1 day'
-	`, from, to).Scan(&totalActiveUsers)
+		WHERE user_id IS NOT NULL AND created_at >= $1 AND created_at < $2
+	`, from, toEnd).Scan(&totalActiveUsers)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":             true,
