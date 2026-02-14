@@ -26,11 +26,19 @@ const (
 )
 
 // RateLimitMiddleware provides rate limiting with IP blocking
-// Admin routes are exempt from rate limiting
+// Admin routes and community routes are exempt from rate limiting
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip rate limiting for admin routes
 		if strings.HasPrefix(r.URL.Path, "/api/admin/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		
+		// Skip rate limiting for community routes
+		if strings.HasPrefix(r.URL.Path, "/api/groups") || 
+		   strings.HasPrefix(r.URL.Path, "/ws/chat") || 
+		   strings.HasPrefix(r.URL.Path, "/api/chat") {
 			next.ServeHTTP(w, r)
 			return
 		}

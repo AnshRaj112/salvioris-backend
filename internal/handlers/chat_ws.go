@@ -158,6 +158,7 @@ func handleIncomingChatMessage(ctx context.Context, userID uuid.UUID, msg wsMess
 	services.SaveChatMessageAsync(services.ChatMessage{
 		GroupID:   msg.GroupID,
 		SenderID:  userID.String(),
+		Username:  username,
 		Message:   msg.Text,
 		Timestamp: event.Timestamp,
 		Status:    "delivered",

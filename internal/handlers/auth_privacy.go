@@ -592,3 +592,34 @@ func getIPAddress(r *http.Request) string {
 	return ip
 }
 
+// GetMe returns the current user's id and username from the session token
+func GetMe(w http.ResponseWriter, r *http.Request) {
+	token := extractBearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Not authenticated",
+		})
+		return
+	}
+	userID, ok, err := services.ValidateSession(token)
+	if err != nil || !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Invalid or expired session",
+		})
+		return
+	}
+	username, _ := services.GetUsernameByID(userID.String())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"user_id":  userID.String(),
+		"username": username,
+	})
+}
+

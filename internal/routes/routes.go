@@ -9,6 +9,7 @@ func SetupRoutes(r *chi.Mux) {
 	// Privacy-first auth routes
 	r.Post("/api/auth/signup", handlers.PrivacySignup)
 	r.Post("/api/auth/signin", handlers.PrivacySignin)
+	r.Get("/api/auth/me", handlers.GetMe)
 	r.Post("/api/auth/check-username", handlers.CheckUsernameAvailability)
 	r.Post("/api/auth/forgot-username", handlers.ForgotUsername)
 	r.Post("/api/auth/forgot-password", handlers.ForgotPassword)
@@ -35,6 +36,9 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/admin/violations", handlers.GetViolations)
 	r.Get("/api/admin/blocked-ips", handlers.GetBlockedIPs)
 	r.Put("/api/admin/unblock-ip", handlers.UnblockIP)
+	r.Get("/api/admin/groups", handlers.AdminGetAllGroups)
+	r.Get("/api/admin/groups/members", handlers.AdminGetGroupMembers)
+	r.Delete("/api/admin/groups", handlers.AdminDeleteGroup)
 	
 	// Vent routes
 	r.Post("/api/vent", handlers.CreateVent)
@@ -70,6 +74,7 @@ func SetupRoutes(r *chi.Mux) {
 	r.Put("/api/groups", handlers.UpdateGroup)
 	r.Delete("/api/groups", handlers.DeleteGroup)
 	r.Post("/api/groups/join", handlers.JoinGroup)
+	r.Delete("/api/groups/member", handlers.RemoveMember)
 	r.Get("/api/groups/members", handlers.GetGroupMembers)
 
 	// Realtime chat API (MongoDB history + Redis Pub/Sub)

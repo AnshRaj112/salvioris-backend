@@ -11,12 +11,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// ChatMessage represents a stored chat message in MongoDB.
-// This is intentionally minimal; user profile data stays in Postgres.
 type ChatMessage struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	GroupID   string             `bson:"group_id" json:"group_id"`
 	SenderID  string             `bson:"sender_id" json:"sender_id"`
+	Username  string             `bson:"username,omitempty" json:"username,omitempty"`
 	Message   string             `bson:"message" json:"message"`
 	Timestamp time.Time          `bson:"timestamp" json:"timestamp"`
 	Status    string             `bson:"status" json:"status"` // e.g. "delivered", "read"

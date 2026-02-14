@@ -206,6 +206,8 @@ func CreateGroup(w http.ResponseWriter, r *http.Request) {
 		"created_at":   now,
 		"member_count": 1,
 		"is_public":    true,
+		"tags":         tags,
+		"is_creator":   true,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -431,6 +433,9 @@ func DeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 // GetGroups handles getting all public groups
 func GetGroups(w http.ResponseWriter, r *http.Request) {
+	// Optional: get current user for is_creator flag
+	currentUserID, _ := getCurrentUser(r)
+
 	// Get query parameters
 	limitStr := r.URL.Query().Get("limit")
 	skipStr := r.URL.Query().Get("skip")
@@ -491,7 +496,7 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 
 	// Get groups with pagination
 	selectQuery := `
-		SELECT g.id, g.name, g.description, g.created_at, g.member_count, g.created_by,
+		SELECT g.id, g.name, g.slug, g.description, g.created_at, g.member_count, g.created_by,
 		       u.username, COALESCE(g.tags, '{}'::text[])
 		FROM groups g
 		LEFT JOIN users u ON g.created_by = u.id
@@ -517,13 +522,13 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 	var groups []map[string]interface{}
 	for rows.Next() {
 		var groupID, createdBy uuid.UUID
-		var name, description sql.NullString
+		var name, description, slug sql.NullString
 		var createdAt time.Time
 		var memberCount int
 		var username sql.NullString
 		var tags pq.StringArray
 
-		err := rows.Scan(&groupID, &name, &description, &createdAt, &memberCount, &createdBy, &username, &tags)
+		err := rows.Scan(&groupID, &name, &slug, &description, &createdAt, &memberCount, &createdBy, &username, &tags)
 		if err != nil {
 			continue
 		}
@@ -531,12 +536,18 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 		groupMap := map[string]interface{}{
 			"id":           groupID.String(),
 			"name":         name.String,
+			"slug":         slug.String,
 			"description": description.String,
 			"created_at":   createdAt,
 			"member_count": memberCount,
 			"created_by":   username.String,
 			"is_public":    true,
 			"tags":         []string(tags),
+		}
+		if currentUserID != nil && createdBy == *currentUserID {
+			groupMap["is_creator"] = true
+		} else {
+			groupMap["is_creator"] = false
 		}
 
 		groups = append(groups, groupMap)
@@ -663,6 +674,130 @@ func JoinGroup(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(JoinGroupResponse{
 		Success: true,
 		Message: "Successfully joined group",
+	})
+}
+
+// RemoveMember allows the group creator to remove a member (cannot remove self)
+func RemoveMember(w http.ResponseWriter, r *http.Request) {
+	groupIDStr := r.URL.Query().Get("group_id")
+	memberUserIDStr := r.URL.Query().Get("user_id")
+	if strings.TrimSpace(groupIDStr) == "" || strings.TrimSpace(memberUserIDStr) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "group_id and user_id are required",
+		})
+		return
+	}
+
+	groupID, err := uuid.Parse(groupIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Invalid group ID",
+		})
+		return
+	}
+	memberUserID, err := uuid.Parse(memberUserIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Invalid user ID",
+		})
+		return
+	}
+
+	creatorID, err := getCurrentUser(r)
+	if err != nil || creatorID == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "You must be signed in to remove members",
+		})
+		return
+	}
+
+	// Creator cannot remove themselves (they can delete the group instead)
+	if *creatorID == memberUserID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "You cannot remove yourself. Delete the group if you want to leave.",
+		})
+		return
+	}
+
+	// Verify requester is the group creator
+	var createdBy uuid.UUID
+	err = database.PostgresDB.QueryRow(`
+		SELECT created_by FROM groups WHERE id = $1
+	`, groupID).Scan(&createdBy)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(GroupActionResponse{
+				Success: false,
+				Message: "Group not found",
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to load group",
+		})
+		return
+	}
+	if createdBy != *creatorID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Only the group creator can remove members",
+		})
+		return
+	}
+
+	res, err := database.PostgresDB.Exec(`
+		DELETE FROM group_members WHERE group_id = $1 AND user_id = $2
+	`, groupID, memberUserID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Failed to remove member",
+		})
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(GroupActionResponse{
+			Success: false,
+			Message: "Member not found in this group",
+		})
+		return
+	}
+
+	_, _ = database.PostgresDB.Exec(`
+		UPDATE groups SET member_count = member_count - 1 WHERE id = $1
+	`, groupID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GroupActionResponse{
+		Success: true,
+		Message: "Member removed successfully",
 	})
 }
 
@@ -1010,5 +1145,205 @@ func SendGroupMessage(w http.ResponseWriter, r *http.Request) {
 		Message: "Message sent successfully",
 		Msg:     msgMap,
 	})
+}
+
+// AdminGetAllGroups returns all groups (admin only). No is_public filter.
+func AdminGetAllGroups(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	skipStr := r.URL.Query().Get("skip")
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+
+	limit := 100
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 && parsedLimit <= 200 {
+			limit = parsedLimit
+		}
+	}
+	skip := 0
+	if skipStr != "" {
+		if parsedSkip, err := strconv.Atoi(skipStr); err == nil && parsedSkip >= 0 {
+			skip = parsedSkip
+		}
+	}
+
+	conditions := []string{"1=1"}
+	args := []interface{}{}
+	argIdx := 1
+	if search != "" {
+		conditions = append(conditions, "LOWER(g.name) LIKE $"+strconv.Itoa(argIdx))
+		args = append(args, "%"+strings.ToLower(search)+"%")
+		argIdx++
+	}
+	if tag != "" {
+		conditions = append(conditions, "$"+strconv.Itoa(argIdx)+" = ANY(g.tags)")
+		args = append(args, tag)
+		argIdx++
+	}
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM groups g ` + whereClause
+	if err := database.PostgresDB.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GetGroupsResponse{Success: false, Groups: []map[string]interface{}{}, Total: 0})
+		return
+	}
+
+	selectQuery := `
+		SELECT g.id, g.name, g.slug, g.description, g.created_at, g.member_count, g.created_by,
+		       u.username, COALESCE(g.tags, '{}'::text[])
+		FROM groups g
+		LEFT JOIN users u ON g.created_by = u.id
+		` + whereClause + `
+		ORDER BY g.created_at DESC
+		LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
+	selectArgs := append(append([]interface{}{}, args...), limit, skip)
+
+	rows, err := database.PostgresDB.Query(selectQuery, selectArgs...)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GetGroupsResponse{Success: false, Groups: []map[string]interface{}{}, Total: 0})
+		return
+	}
+	defer rows.Close()
+
+	var groups []map[string]interface{}
+	for rows.Next() {
+		var groupID, createdBy uuid.UUID
+		var name, description, slug sql.NullString
+		var createdAt time.Time
+		var memberCount int
+		var username sql.NullString
+		var tags pq.StringArray
+		if err := rows.Scan(&groupID, &name, &slug, &description, &createdAt, &memberCount, &createdBy, &username, &tags); err != nil {
+			continue
+		}
+		groupMap := map[string]interface{}{
+			"id":           groupID.String(),
+			"name":         name.String,
+			"slug":         slug.String,
+			"description": description.String,
+			"created_at":   createdAt,
+			"member_count": memberCount,
+			"created_by":   username.String,
+			"tags":         []string(tags),
+		}
+		groups = append(groups, groupMap)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetGroupsResponse{Success: true, Groups: groups, Total: total})
+}
+
+// AdminGetGroupMembers returns members of a group (admin only).
+func AdminGetGroupMembers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+
+	groupIDStr := r.URL.Query().Get("group_id")
+	if strings.TrimSpace(groupIDStr) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GetGroupMembersResponse{Success: false, Members: []map[string]interface{}{}, Total: 0})
+		return
+	}
+
+	groupID, err := uuid.Parse(groupIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GetGroupMembersResponse{Success: false, Members: []map[string]interface{}{}, Total: 0})
+		return
+	}
+
+	var total int
+	if err := database.PostgresDB.QueryRow(`SELECT COUNT(*) FROM group_members WHERE group_id = $1`, groupID).Scan(&total); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GetGroupMembersResponse{Success: false, Members: []map[string]interface{}{}, Total: 0})
+		return
+	}
+
+	rows, err := database.PostgresDB.Query(`
+		SELECT gm.user_id, gm.joined_at, u.username
+		FROM group_members gm
+		LEFT JOIN users u ON gm.user_id = u.id
+		WHERE gm.group_id = $1
+		ORDER BY gm.joined_at ASC
+	`, groupID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GetGroupMembersResponse{Success: false, Members: []map[string]interface{}{}, Total: 0})
+		return
+	}
+	defer rows.Close()
+
+	var members []map[string]interface{}
+	for rows.Next() {
+		var userID uuid.UUID
+		var joinedAt time.Time
+		var username sql.NullString
+		if err := rows.Scan(&userID, &joinedAt, &username); err != nil {
+			continue
+		}
+		members = append(members, map[string]interface{}{
+			"user_id":   userID.String(),
+			"username":  username.String,
+			"joined_at": joinedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetGroupMembersResponse{Success: true, Members: members, Total: total})
+}
+
+// AdminDeleteGroup deletes a group (admin only). Can delete any group.
+func AdminDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+
+	groupIDStr := r.URL.Query().Get("group_id")
+	if strings.TrimSpace(groupIDStr) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{Success: false, Message: "group_id is required"})
+		return
+	}
+
+	groupID, err := uuid.Parse(groupIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(GroupActionResponse{Success: false, Message: "Invalid group ID"})
+		return
+	}
+
+	res, err := database.PostgresDB.Exec(`DELETE FROM groups WHERE id = $1`, groupID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(GroupActionResponse{Success: false, Message: "Failed to delete group"})
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(GroupActionResponse{Success: false, Message: "Group not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GroupActionResponse{Success: true, Message: "Group deleted successfully"})
 }
 
