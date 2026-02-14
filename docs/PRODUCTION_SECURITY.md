@@ -178,20 +178,19 @@ Production middlewares use `clientip.RealClientIP(r)` directly in `security.go`.
 
 ## Production checklist
 
-1. **Render (or host) env**
+1. **Backend env (e.g. Render)**
    - `ENV=production`
-   - `HOST = host`
+   - `HOST=https://backend.salvioris.com`
+   - **`ALLOWED_ORIGINS`** or **`FRONTEND_URL`** must include your **production frontend origin** (e.g. `https://salvioris.com`, `https://www.salvioris.com`). Otherwise the browser will block requests to the API (CORS). Example: `ALLOWED_ORIGINS=https://salvioris.com,https://www.salvioris.com,http://localhost:3000`
 
 2. **DNS / proxy**
    - Traffic to the backend goes through Cloudflare so `CF-Connecting-IP` is set.
-   - Public hostname is `backend.salvioris.com` so `Host` matches `AllowedHost`.
+   - Public hostname is `backend.salvioris.com` so `Host` (or `X-Forwarded-Host`) matches `AllowedHost`.
 
 3. **No bypass**
-   - Users should hit `HOST`; direct `.onrender.com` (or other host) will get 403 when host check is enabled.
+   - Users should hit `backend.salvioris.com`; direct `.onrender.com` (or other host) will get 403 when host check is enabled.
 
 4. **Behavior**
-   - First middleware after CORS: security headers.
-   - Then host check, then global rate limit, then login rate limit, then routes.
-   - No change to CORS or JWT; optional cleanup goroutines prevent limiter map growth.
+   - CORS uses `AllowedOrigins` (from `ALLOWED_ORIGINS` or `FRONTEND_URL`/`FRONTEND_URL_2`/`FRONTEND_URL_3`). First middleware after CORS: security headers, then host check (OPTIONS allowed through), then global rate limit, then login rate limit, then routes.
 
 This doc and the listed files together define the full production security setup (every file and everything).

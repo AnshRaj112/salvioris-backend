@@ -115,9 +115,9 @@ func main() {
 	// Setup router
 	r := chi.NewRouter()
 
-	// Setup CORS - Allow requests from frontend URL
+	// Setup CORS - Allow all configured origins (production frontend + localhost)
 	corsMiddleware := cors.New(cors.Options{
-		AllowedOrigins:   []string{cfg.FrontendURL},
+		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
 		ExposedHeaders:   []string{"Link"},

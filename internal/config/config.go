@@ -13,11 +13,12 @@ type Config struct {
 	EncryptionKey       string
 	Port                string
 	FrontendURL         string
+	AllowedOrigins      []string // CORS: from ALLOWED_ORIGINS or FRONTEND_URL(s); must include production frontend origin
 	CloudinaryName      string
 	CloudinaryAPIKey    string
 	CloudinaryAPISecret string
 	Host                string   // Raw HOST env (e.g. https://backend.salvioris.com)
-	AllowedHost         string   // Hostname only for strict host check (e.g. backend.salvioris.com)
+	AllowedHost         string   // Hostname only for strict host check (production only)
 	Environment         string   // ENV: production, development, etc.
 }
 
@@ -43,6 +44,20 @@ func Load() *Config {
 		allowedHost = strings.TrimSpace(allowedHost)
 	}
 
+	// CORS: allow multiple origins so production frontend (e.g. https://salvioris.com) works
+	allowedOrigins := parseOrigins(getEnv("ALLOWED_ORIGINS", ""))
+	if len(allowedOrigins) == 0 {
+		for _, u := range []string{getEnv("FRONTEND_URL", "http://localhost:3000"), getEnv("FRONTEND_URL_2", ""), getEnv("FRONTEND_URL_3", "")} {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				allowedOrigins = append(allowedOrigins, u)
+			}
+		}
+	}
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"http://localhost:3000"}
+	}
+
 	return &Config{
 		MongoURI:            getEnv("MONGODB_URI", getEnv("MONGO_URI", "mongodb://localhost:27017/serenify")),
 		PostgresURI:         getEnv("POSTGRES_URI", "postgres://localhost:5432/serenify?sslmode=disable"),
@@ -54,10 +69,25 @@ func Load() *Config {
 		Environment:         env,
 		Port:                getEnv("PORT", "8080"),
 		FrontendURL:         getEnv("FRONTEND_URL", "http://localhost:3000"),
+		AllowedOrigins:      allowedOrigins,
 		CloudinaryName:      getEnv("CLOUDINARY_CLOUD_NAME", ""),
 		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
 		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
 	}
+}
+
+func parseOrigins(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // IsProduction returns true when ENV is set to "production".

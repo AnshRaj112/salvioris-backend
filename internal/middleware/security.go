@@ -32,7 +32,7 @@ func SecurityHeaders(next http.Handler) http.Handler {
 }
 
 // HostCheck returns 403 when r.Host does not match allowedHost (e.g. backend.salvioris.com).
-// allowedHost should be the bare hostname without scheme or port.
+// Allows OPTIONS (preflight) through. Trusts X-Forwarded-Host when it matches allowedHost (proxies).
 func HostCheck(allowedHost string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,16 +40,37 @@ func HostCheck(allowedHost string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			reqHost := r.Host
-			if host, _, err := net.SplitHostPort(reqHost); err == nil {
-				reqHost = host
-			}
-			if !strings.EqualFold(strings.TrimSpace(reqHost), strings.TrimSpace(allowedHost)) {
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte("Forbidden"))
+			// Let preflight through so CORS works
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
 				return
 			}
-			next.ServeHTTP(w, r)
+			normalize := func(h string) string {
+				h = strings.TrimSpace(h)
+				if host, _, err := net.SplitHostPort(h); err == nil {
+					h = host
+				}
+				return strings.ToLower(h)
+			}
+			reqHost := normalize(r.Host)
+			if reqHost == strings.ToLower(strings.TrimSpace(allowedHost)) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Behind proxy: Cloudflare/Render may send original host in X-Forwarded-Host (use first if multiple)
+			if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+				if idx := strings.Index(fwd, ","); idx != -1 {
+					fwd = strings.TrimSpace(fwd[:idx])
+				} else {
+					fwd = strings.TrimSpace(fwd)
+				}
+				if normalize(fwd) == strings.ToLower(strings.TrimSpace(allowedHost)) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Forbidden"))
 		})
 	}
 }
