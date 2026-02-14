@@ -1,9 +1,7 @@
 package middleware
 
 import (
-	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,50 +27,6 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set(headerStrictTransportSecurity, "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
-}
-
-// HostCheck returns 403 when r.Host does not match allowedHost (e.g. backend.salvioris.com).
-// Allows OPTIONS (preflight) through. Trusts X-Forwarded-Host when it matches allowedHost (proxies).
-func HostCheck(allowedHost string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if allowedHost == "" {
-				next.ServeHTTP(w, r)
-				return
-			}
-			// Let preflight through so CORS works
-			if r.Method == http.MethodOptions {
-				next.ServeHTTP(w, r)
-				return
-			}
-			normalize := func(h string) string {
-				h = strings.TrimSpace(h)
-				if host, _, err := net.SplitHostPort(h); err == nil {
-					h = host
-				}
-				return strings.ToLower(h)
-			}
-			reqHost := normalize(r.Host)
-			if reqHost == strings.ToLower(strings.TrimSpace(allowedHost)) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			// Behind proxy: Cloudflare/Render may send original host in X-Forwarded-Host (use first if multiple)
-			if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
-				if idx := strings.Index(fwd, ","); idx != -1 {
-					fwd = strings.TrimSpace(fwd[:idx])
-				} else {
-					fwd = strings.TrimSpace(fwd)
-				}
-				if normalize(fwd) == strings.ToLower(strings.TrimSpace(allowedHost)) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte("Forbidden"))
-		})
-	}
 }
 
 // --- Global rate limiting (per-IP, 1/s, burst 10) ---
@@ -223,11 +177,11 @@ func LoginRateLimit(next http.Handler) http.Handler {
 	})
 }
 
-// ProductionSecurity returns middlewares for production: SecurityHeaders → HostCheck → GlobalRateLimit → LoginRateLimit.
-func ProductionSecurity(allowedHost string) []func(http.Handler) http.Handler {
+// ProductionSecurity returns middlewares for production: SecurityHeaders → GlobalRateLimit → LoginRateLimit.
+// No host validation (traffic goes Vercel → Render → Go; no CDN/proxy layer).
+func ProductionSecurity() []func(http.Handler) http.Handler {
 	return []func(http.Handler) http.Handler{
 		SecurityHeaders,
-		HostCheck(allowedHost),
 		GlobalRateLimit,
 		LoginRateLimit,
 	}

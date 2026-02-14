@@ -17,10 +17,7 @@ The Serenify backend implements a comprehensive rate limiting system using Redis
 ### Rate Limiting Flow
 
 1. **Request Arrives**: Every API request (except `/health`) goes through the rate limiting middleware
-2. **IP Extraction**: The middleware extracts the client's IP address from:
-   - `X-Forwarded-For` header (first IP if multiple)
-   - `X-Real-IP` header
-   - `RemoteAddr` (fallback)
+2. **IP Extraction**: The middleware extracts the client's IP address via `services.GetIPAddress(r)`, which uses `r.RemoteAddr` (parsed with `net.SplitHostPort`). In production, per-IP rate limiting uses the same IP source.
 3. **Check Blocked Status**: First checks if the IP is already blocked
 4. **Count Requests**: Increments a counter in Redis for the IP address
 5. **Evaluate Limit**: 

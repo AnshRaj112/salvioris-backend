@@ -17,32 +17,13 @@ type Config struct {
 	CloudinaryName      string
 	CloudinaryAPIKey    string
 	CloudinaryAPISecret string
-	Host                string   // Raw HOST env (e.g. https://backend.salvioris.com)
-	AllowedHost         string   // Hostname only for strict host check (production only)
-	Environment         string   // ENV: production, development, etc.
+	Host        string // Raw HOST env (e.g. https://backend.salvioris.com) for URLs if needed
+	Environment string // ENV: production, development, etc.
 }
 
 func Load() *Config {
 	env := strings.ToLower(strings.TrimSpace(getEnv("ENV", "development")))
 	host := getEnv("HOST", "http://localhost:8080")
-
-	// AllowedHost is only set in production; host check is skipped in development
-	var allowedHost string
-	if env == "production" {
-		allowedHost = host
-		if strings.HasPrefix(allowedHost, "https://") {
-			allowedHost = strings.TrimPrefix(allowedHost, "https://")
-		} else if strings.HasPrefix(allowedHost, "http://") {
-			allowedHost = strings.TrimPrefix(allowedHost, "http://")
-		}
-		if idx := strings.Index(allowedHost, "/"); idx != -1 {
-			allowedHost = allowedHost[:idx]
-		}
-		if idx := strings.Index(allowedHost, ":"); idx != -1 {
-			allowedHost = allowedHost[:idx]
-		}
-		allowedHost = strings.TrimSpace(allowedHost)
-	}
 
 	// CORS: allow multiple origins so production frontend (e.g. https://www.salvioris.com) works
 	allowedOrigins := parseOrigins(getEnv("ALLOWED_ORIGINS", ""))
@@ -89,7 +70,6 @@ func Load() *Config {
 		JWTSecret:           getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
 		EncryptionKey:       getEnv("ENCRYPTION_KEY", ""),
 		Host:                host,
-		AllowedHost:         allowedHost,
 		Environment:         env,
 		Port:                getEnv("PORT", "8080"),
 		FrontendURL:         getEnv("FRONTEND_URL", "http://localhost:3000"),

@@ -6,16 +6,13 @@ import (
 	"strings"
 )
 
-// RealClientIP returns the real client IP, trusting Cloudflare proxy.
-// Uses CF-Connecting-IP when present, otherwise falls back to RemoteAddr
-// parsed with net.SplitHostPort. Use for rate limiting and logging behind Cloudflare.
+// RealClientIP returns the client IP from the request.
+// Uses r.RemoteAddr only (no proxy headers). Use for rate limiting and logging
+// when traffic goes directly to the app (e.g. Vercel → Render, no CDN).
 func RealClientIP(r *http.Request) string {
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		return cf
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return strings.TrimSpace(host)
 }

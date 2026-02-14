@@ -117,13 +117,13 @@ func main() {
 	// Custom CORS: set headers and respond to OPTIONS with 200 so preflight never gets 403
 	r.Use(middleware.CORS(cfg.AllowedOrigins))
 
-	// Production: SecurityHeaders → HostCheck (HOST) → GlobalRateLimit → LoginRateLimit
+	// Production: SecurityHeaders → GlobalRateLimit → LoginRateLimit (no host check; no CDN/proxy)
 	// Non-production: Redis-based rate limit only
 	if cfg.IsProduction() {
-		for _, mw := range middleware.ProductionSecurity(cfg.AllowedHost) {
+		for _, mw := range middleware.ProductionSecurity() {
 			r.Use(mw)
 		}
-		log.Println("✅ Production security enabled (HOST=" + cfg.AllowedHost + ", security headers, host check, rate limiting)")
+		log.Println("✅ Production security enabled (security headers, per-IP + login rate limiting)")
 	} else {
 		r.Use(middleware.RateLimitMiddleware)
 	}

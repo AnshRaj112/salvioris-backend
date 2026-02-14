@@ -217,7 +217,7 @@ func CheckContent(message string) (hasThreat bool, hasSelfHarm bool, matchedKeyw
 	return hasThreat, hasSelfHarm, matchedKeywords
 }
 
-// GetIPAddress returns the real client IP (Cloudflare CF-Connecting-IP, else RemoteAddr via net.SplitHostPort).
+// GetIPAddress returns the client IP from the request (RemoteAddr via net.SplitHostPort).
 func GetIPAddress(r *http.Request) string {
 	return clientip.RealClientIP(r)
 }

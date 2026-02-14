@@ -1,6 +1,6 @@
-# Production Security: DDoS Mitigation, Rate Limiting & Hardening
+# Production Security: Rate Limiting & Hardening
 
-This document describes the **production-only** security stack for the Go backend when running on Render behind Cloudflare (`HOST`). It covers every file, config, middleware order, and behavior.
+This document describes the **production-only** security stack for the Go backend when running on Render. Traffic flows **directly** from the internet to Render (no CDN/proxy layer). CORS is configured for the production frontend (e.g. `https://www.salvioris.com`).
 
 ---
 
@@ -11,14 +11,11 @@ This document describes the **production-only** security stack for the Go backen
 3. [Files involved](#files-involved)
 4. [Environment & config](#environment--config)
 5. [Middleware flow](#middleware-flow)
-6. [Real client IP (Cloudflare)](#real-client-ip-cloudflare)
+6. [Client IP](#client-ip)
 7. [Global rate limiting](#global-rate-limiting)
 8. [Login route rate limiting](#login-route-rate-limiting)
-9. [Strict host validation](#strict-host-validation)
-10. [Security headers](#security-headers)
-11. [Dependencies](#dependencies)
-12. [Call sites using client IP](#call-sites-using-client-ip)
-13. [Production checklist](#production-checklist)
+9. [Security headers](#security-headers)
+10. [Production checklist](#production-checklist)
 
 ---
 
@@ -26,10 +23,9 @@ This document describes the **production-only** security stack for the Go backen
 
 | Feature | Description |
 |--------|--------------|
-| **Trust Cloudflare** | Real client IP from `CF-Connecting-IP`, fallback `RemoteAddr` via `net.SplitHostPort`. |
+| **Client IP** | From `r.RemoteAddr` only (no proxy headers). |
 | **Global rate limit** | Per-IP: 1 req/s, burst 10. HTTP 429 when exceeded. In-memory, thread-safe. |
 | **Login rate limit** | Sign-in routes only: 1 req / 5s, burst 2. HTTP 429 when exceeded. |
-| **Host check** | Reject requests when `Host != backend.salvioris.com` (HTTP 403). |
 | **Security headers** | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, CSP, HSTS. |
 
 All of this runs **only when `ENV=production`**. Otherwise the app uses the existing Redis-based rate limiting only.
@@ -38,8 +34,8 @@ All of this runs **only when `ENV=production`**. Otherwise the app uses the exis
 
 ## When it runs
 
-- **`ENV=production`** → Production security stack is applied (security headers, host check, global + login rate limits).
-- **Any other `ENV`** (e.g. `development`) → Only the existing Redis-based `RateLimitMiddleware` is used; no host check, no extra security headers from this stack.
+- **`ENV=production`** → Production security stack is applied (security headers, global + login rate limits).
+- **Any other `ENV`** (e.g. `development`) → Only the existing Redis-based `RateLimitMiddleware` is used.
 
 ---
 
@@ -47,15 +43,12 @@ All of this runs **only when `ENV=production`**. Otherwise the app uses the exis
 
 | File | Purpose |
 |------|--------|
-| **`pkg/clientip/clientip.go`** | Single helper: `RealClientIP(r *http.Request) string`. Uses `CF-Connecting-IP`, then `net.SplitHostPort(r.RemoteAddr)`. |
-| **`internal/config/config.go`** | Adds `Environment`, `AllowedHost` (from `HOST`), and `IsProduction()`. Parses `HOST` to a bare hostname (no scheme/port). |
-| **`internal/middleware/security.go`** | All production middlewares: `SecurityHeaders`, `HostCheck(allowedHost)`, `GlobalRateLimit`, `LoginRateLimit`, plus `ProductionSecurity(allowedHost)` and per-IP limiter maps with cleanup. |
-| **`cmd/server/main.go`** | If `cfg.IsProduction()`: applies `ProductionSecurity(cfg.AllowedHost)`; else applies `RateLimitMiddleware`. CORS stays first. |
-| **`internal/services/moderation.go`** | `GetIPAddress(r)` updated to call `clientip.RealClientIP(r)` so all logging/rate-limiting use the same IP. |
-| **`internal/middleware/ratelimit.go`** | Existing Redis-based rate limit; used only when **not** production. Uses `services.GetIPAddress(r)`. |
-| **`go.mod`** | Adds `golang.org/x/time/rate`. |
-
-No other files are required for this feature. Handlers that already use `services.GetIPAddress(r)` (feedback, contact, waitlist, journal, vent, etc.) automatically use the real client IP once `GetIPAddress` is implemented via `clientip.RealClientIP`.
+| **`pkg/clientip/clientip.go`** | `RealClientIP(r *http.Request) string` — parses `r.RemoteAddr` with `net.SplitHostPort`. |
+| **`internal/config/config.go`** | `Environment`, `IsProduction()`, `AllowedOrigins` (CORS). No host validation. |
+| **`internal/middleware/security.go`** | `SecurityHeaders`, `GlobalRateLimit`, `LoginRateLimit`, `ProductionSecurity()`. |
+| **`cmd/server/main.go`** | If `cfg.IsProduction()`: applies `ProductionSecurity()`; else `RateLimitMiddleware`. CORS first. |
+| **`internal/services/moderation.go`** | `GetIPAddress(r)` calls `clientip.RealClientIP(r)`. |
+| **`internal/middleware/ratelimit.go`** | Redis-based rate limit when **not** production. Uses `services.GetIPAddress(r)`. |
 
 ---
 
@@ -65,132 +58,74 @@ No other files are required for this feature. Handlers that already use `service
 
 | Variable | Example | Purpose |
 |----------|---------|--------|
-| **`ENV`** | `production` | Enables production security stack when set to `production` (case-insensitive). |
-| **`HOST`** | `https://backend.salvioris.com` | Used to derive `AllowedHost` for strict host check. Scheme and port are stripped; comparison is hostname-only. |
+| **`ENV`** | `production` | Enables production security stack. |
+| **`HOST`** | `https://backend.salvioris.com` | Optional; for URL generation if needed. Not used for host validation. |
+| **`ALLOWED_ORIGINS`** | `https://www.salvioris.com,http://localhost:3000` | CORS allowed origins (or use `FRONTEND_URL` / `FRONTEND_URL_2` / `FRONTEND_URL_3`). |
 
-### Config fields (`internal/config/config.go`)
+### Config fields
 
 - **`Environment`** – from `ENV`, default `development`.
-- **`AllowedHost`** – from `HOST`: strip `https://` or `http://`, then strip path and port. Example: `https://backend.salvioris.com` → `backend.salvioris.com`.
-- **`IsProduction() bool`** – returns true when `Environment` is `production` (trimmed, lowercased).
+- **`IsProduction() bool`** – true when `Environment` is `production`.
+- **`AllowedOrigins`** – from `ALLOWED_ORIGINS` or `FRONTEND_URL`(s). Must include production frontend origin.
 
 ---
 
 ## Middleware flow
 
-Order is fixed:
+Order:
 
-1. **CORS** (unchanged, first).
-2. **Production only:**  
-   **SecurityHeaders** → **HostCheck** → **GlobalRateLimit** → **LoginRateLimit**  
-   (exposed as `middleware.ProductionSecurity(cfg.AllowedHost)`).
-3. **Non-production only:**  
-   **RateLimitMiddleware** (existing Redis-based).
+1. **CORS** (first).
+2. **Production only:** **SecurityHeaders** → **GlobalRateLimit** → **LoginRateLimit** (`middleware.ProductionSecurity()`).
+3. **Non-production only:** **RateLimitMiddleware** (Redis-based).
 4. Routes (e.g. `GET /health`, then `routes.SetupRoutes(r)`).
-
-So:
-
-- **SecurityHeaders** – set headers on every response.
-- **HostCheck** – reject wrong host before any rate limiting.
-- **GlobalRateLimit** – per-IP token bucket (1/s, burst 10).
-- **LoginRateLimit** – stricter limit on sign-in paths only (1/5s, burst 2).
 
 ---
 
-## Real client IP (Cloudflare)
+## Client IP
 
-- **Source of truth:** `pkg/clientip/clientip.go` → `RealClientIP(r *http.Request) string`.
-- **Logic:**
-  1. If `CF-Connecting-IP` is set and non-empty (after trim), return it.
-  2. Else parse `r.RemoteAddr` with `net.SplitHostPort` and return the host part; on parse error, return `r.RemoteAddr` as-is.
-- **Usage:** All rate limiting and logging must use this IP: production middlewares and `services.GetIPAddress(r)` both rely on it (with `GetIPAddress` delegating to `RealClientIP`).
+- **Source:** `pkg/clientip/clientip.go` → `RealClientIP(r *http.Request) string`.
+- **Logic:** Parse `r.RemoteAddr` with `net.SplitHostPort`; return host part. On error, return `r.RemoteAddr` trimmed.
+- **No proxy headers:** No `CF-Connecting-IP`, `X-Forwarded-For`, or `X-Real-IP` — traffic is assumed to hit Render (or the app) directly.
 
 ---
 
 ## Global rate limiting
 
 - **Middleware:** `GlobalRateLimit` in `internal/middleware/security.go`.
-- **Library:** `golang.org/x/time/rate` (token bucket).
 - **Limits:** 1 request per second per IP, burst 10.
-- **On exceed:** HTTP 429, JSON body e.g. `{"success":false,"message":"Too many requests. Please slow down."}`.
-- **Storage:** In-memory map `globalEntries` from client IP → `*limiterEntry` (limiter + `lastUse`). Access guarded by `globalEntriesMu` (`sync.Mutex`).
-- **Cleanup:** Background goroutine every 5 minutes removes entries not used in the last 30 minutes to avoid unbounded growth.
+- **On exceed:** HTTP 429, JSON body `{"success":false,"message":"Too many requests. Please slow down."}`.
+- **Storage:** In-memory map with mutex; cleanup every 5 minutes (entries unused for 30 minutes removed).
 
 ---
 
 ## Login route rate limiting
 
 - **Middleware:** `LoginRateLimit` in `internal/middleware/security.go`.
-- **Paths (exact):**  
-  `/api/auth/signin`, `/api/auth/user/signin`, `/api/auth/therapist/signin`, `/api/admin/signin`.
+- **Paths:** `/api/auth/signin`, `/api/auth/user/signin`, `/api/auth/therapist/signin`, `/api/admin/signin`.
 - **Limits:** 1 request every 5 seconds per IP, burst 2.
-- **On exceed:** HTTP 429, JSON body e.g. `{"success":false,"message":"Too many login attempts. Please try again later."}`.
-- **Storage:** Separate in-memory map `loginEntries` with its own mutex and cleanup (same pattern: 5 min interval, 30 min TTL).
-
----
-
-## Strict host validation
-
-- **Middleware:** `HostCheck(allowedHost)` in `internal/middleware/security.go`.
-- **Behavior:**  
-  - Parse `r.Host` with `net.SplitHostPort`; if that fails, use `r.Host` as the host.  
-  - If the host part is not equal (case-insensitive, trimmed) to `allowedHost`, respond with **HTTP 403** and body `Forbidden`, and do not call next handler.
-- **Purpose:** Block direct access via the Render host (e.g. `.onrender.com`) so traffic must go through Cloudflare at `backend.salvioris.com`.
+- **On exceed:** HTTP 429, JSON body `{"success":false,"message":"Too many login attempts. Please try again later."}`.
 
 ---
 
 ## Security headers
 
 - **Middleware:** `SecurityHeaders` in `internal/middleware/security.go`.
-- **Headers set on every response:**
-
-| Header | Value |
-|--------|--------|
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `DENY` |
-| `X-XSS-Protection` | `1; mode=block` |
-| `Content-Security-Policy` | `default-src 'self'` |
-| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
-
----
-
-## Dependencies
-
-- **`golang.org/x/time/rate`** – used only in `internal/middleware/security.go` for both global and login limiters.
-- No other new external dependencies. CORS and JWT auth are unchanged.
-
----
-
-## Call sites using client IP
-
-These use `services.GetIPAddress(r)`, which (after the change) uses `clientip.RealClientIP(r)`:
-
-- `internal/middleware/ratelimit.go` – Redis rate limit (non-production).
-- `internal/handlers/feedback.go`
-- `internal/handlers/contact.go`
-- `internal/handlers/waitlist.go` (two places)
-- `internal/handlers/journal.go`
-- `internal/handlers/vent.go`
-
-Production middlewares use `clientip.RealClientIP(r)` directly in `security.go`. So “every file” that needs the real client IP goes through one implementation (Cloudflare + `net.SplitHostPort` fallback).
+- **Headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Content-Security-Policy: default-src 'self'`, `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
 
 ---
 
 ## Production checklist
 
-1. **Backend env (e.g. Render)**
+1. **Backend (e.g. Render)**
    - `ENV=production`
-   - `HOST=https://backend.salvioris.com`
-   - **`ALLOWED_ORIGINS`** or **`FRONTEND_URL`** must include your **production frontend origin** (e.g. `https://salvioris.com`, `https://www.salvioris.com`). Otherwise the browser will block requests to the API (CORS). Example: `ALLOWED_ORIGINS=https://salvioris.com,https://www.salvioris.com,http://localhost:3000`
+   - **`ALLOWED_ORIGINS`** or **`FRONTEND_URL`** must include your production frontend origin (e.g. `https://www.salvioris.com`). Example: `ALLOWED_ORIGINS=https://www.salvioris.com,https://salvioris.com,http://localhost:3000`
 
-2. **DNS / proxy**
-   - Traffic to the backend goes through Cloudflare so `CF-Connecting-IP` is set.
-   - Public hostname is `backend.salvioris.com` so `Host` (or `X-Forwarded-Host`) matches `AllowedHost`.
+2. **DNS**
+   - Point `backend.salvioris.com` (CNAME) to your Render service (e.g. `serenify-backend-25s5.onrender.com`). No proxy/CDN in between.
+   - See [DNS_SETUP.md](./DNS_SETUP.md) for full DNS at registrar.
 
-3. **No bypass**
-   - Users should hit `backend.salvioris.com`; direct `.onrender.com` (or other host) will get 403 when host check is enabled.
+3. **Frontend**
+   - `NEXT_PUBLIC_API_URL=https://backend.salvioris.com` (no trailing slash).
 
 4. **Behavior**
-   - CORS uses `AllowedOrigins` (from `ALLOWED_ORIGINS` or `FRONTEND_URL`/`FRONTEND_URL_2`/`FRONTEND_URL_3`). First middleware after CORS: security headers, then host check (OPTIONS allowed through), then global rate limit, then login rate limit, then routes.
-
-This doc and the listed files together define the full production security setup (every file and everything).
+   - CORS allows only configured origins. Security headers and per-IP + login rate limits apply in production. No host validation.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
+	"github.com/AnshRaj112/serenify-backend/pkg/clientip"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
@@ -284,7 +285,7 @@ func PrivacySignin(w http.ResponseWriter, r *http.Request) {
 
 	// Track device for support purposes
 	deviceToken := generateDeviceToken()
-	ipAddress := getIPAddress(r)
+	ipAddress := clientip.RealClientIP(r)
 	userAgent := r.UserAgent()
 
 	// Try to insert or update device tracking
@@ -571,25 +572,6 @@ func generateDeviceToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)
-}
-
-func getIPAddress(r *http.Request) string {
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
-	}
-	realIP := r.Header.Get("X-Real-IP")
-	if realIP != "" {
-		return realIP
-	}
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-	return ip
 }
 
 // GetMe returns the current user's id and username from the session token

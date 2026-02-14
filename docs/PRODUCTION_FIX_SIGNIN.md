@@ -21,7 +21,6 @@ Redeploy the backend after changing env vars.
 ## 2. Confirm production env vars (backend)
 
 - `ENV=production`
-- `HOST=https://backend.salvioris.com`
 - `ALLOWED_ORIGINS` (or `FRONTEND_URL`) includes the exact origin the user sees in the address bar (e.g. `https://salvioris.com` or `https://www.salvioris.com`).
 
 ## 3. Frontend API URL (frontend host, e.g. Vercel)
@@ -33,9 +32,8 @@ Set the backend base URL for the deployed frontend:
 
 Redeploy the frontend after changing this.
 
-## 4. What was changed in code
+## 4. What the backend does
 
-- **CORS:** Backend now uses **multiple allowed origins** from `ALLOWED_ORIGINS` or `FRONTEND_URL` / `FRONTEND_URL_2` / `FRONTEND_URL_3`, so the production frontend origin is allowed.
-- **Host check:** OPTIONS (preflight) requests are allowed through; `X-Forwarded-Host` is trusted when it matches the configured host so proxies (e.g. Cloudflare → Render) don’t cause 403.
+- **CORS:** Backend uses allowed origins from `ALLOWED_ORIGINS` or `FRONTEND_URL` / `FRONTEND_URL_2` / `FRONTEND_URL_3`, so the production frontend origin is allowed. OPTIONS (preflight) receives 200 and CORS headers.
 
 After setting the env vars and redeploying both backend and frontend, sign-in to `https://backend.salvioris.com/api/auth/signin` from your production site should work.
