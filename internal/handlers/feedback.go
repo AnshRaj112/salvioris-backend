@@ -170,3 +170,54 @@ func GetFeedbacks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DeleteFeedback deletes a feedback by ID (admin only)
+func DeleteFeedback(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	feedbackID := r.URL.Query().Get("id")
+	if feedbackID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SubmitFeedbackResponse{
+			Success: false,
+			Message: "Feedback ID is required",
+		})
+		return
+	}
+	if _, err := uuid.Parse(feedbackID); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SubmitFeedbackResponse{
+			Success: false,
+			Message: "Invalid feedback ID",
+		})
+		return
+	}
+
+	result, err := database.PostgresDB.Exec(`DELETE FROM feedbacks WHERE id = $1`, feedbackID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(SubmitFeedbackResponse{
+			Success: false,
+			Message: "Failed to delete feedback",
+		})
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(SubmitFeedbackResponse{
+			Success: false,
+			Message: "Feedback not found",
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(SubmitFeedbackResponse{
+		Success: true,
+		Message: "Feedback deleted successfully",
+	})
+}
+

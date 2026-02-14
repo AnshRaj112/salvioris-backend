@@ -36,6 +36,8 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/admin/violations", handlers.GetViolations)
 	r.Get("/api/admin/blocked-ips", handlers.GetBlockedIPs)
 	r.Put("/api/admin/unblock-ip", handlers.UnblockIP)
+	r.Get("/api/admin/users", handlers.GetUsers)
+	r.Delete("/api/admin/users", handlers.DeleteUser)
 	r.Get("/api/admin/groups", handlers.AdminGetAllGroups)
 	r.Get("/api/admin/groups/members", handlers.AdminGetGroupMembers)
 	r.Delete("/api/admin/groups", handlers.AdminDeleteGroup)
@@ -47,6 +49,7 @@ func SetupRoutes(r *chi.Mux) {
 	// Feedback routes
 	r.Post("/api/feedback", handlers.SubmitFeedback)
 	r.Get("/api/admin/feedbacks", handlers.GetFeedbacks)
+	r.Delete("/api/admin/feedbacks", handlers.DeleteFeedback)
 
 	// Journaling routes
 	r.Post("/api/journals", handlers.CreateJournal)
@@ -55,6 +58,7 @@ func SetupRoutes(r *chi.Mux) {
 	// Contact us routes
 	r.Post("/api/contact", handlers.SubmitContact)
 	r.Get("/api/admin/contacts", handlers.GetContacts)
+	r.Delete("/api/admin/contacts", handlers.DeleteContact)
 	
 	// Waitlist routes
 	r.Post("/api/waitlist/user", handlers.SubmitUserWaitlist)

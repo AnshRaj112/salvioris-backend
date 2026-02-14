@@ -63,7 +63,7 @@ var baseSelfHarmWords = []string{
 func CleanText(text string) string {
 	// Step 1: Convert to lowercase
 	cleaned := strings.ToLower(text)
-	
+
 	// Step 2: Replace obfuscation characters with their letter equivalents
 	replacements := map[string]string{
 		"@": "a",
@@ -82,11 +82,11 @@ func CleanText(text string) string {
 		"о": "o", // Cyrillic 'о' looks like Latin 'o'
 		"р": "p", // Cyrillic 'р' looks like Latin 'p'
 	}
-	
+
 	for old, new := range replacements {
 		cleaned = strings.ReplaceAll(cleaned, old, new)
 	}
-	
+
 	// Step 3: Remove all non-letter characters (spaces, punctuation, etc.)
 	// Keep only letters
 	var builder strings.Builder
@@ -99,15 +99,15 @@ func CleanText(text string) string {
 		}
 	}
 	cleaned = builder.String()
-	
+
 	// Step 4: Collapse repeated characters (rrraaaapeee -> rape)
 	cleaned = collapseRepeats(cleaned)
-	
+
 	// Step 5: Normalize whitespace (multiple spaces to single space)
 	spaceRegex := regexp.MustCompile(`\s+`)
 	cleaned = spaceRegex.ReplaceAllString(cleaned, " ")
 	cleaned = strings.TrimSpace(cleaned)
-	
+
 	return cleaned
 }
 
@@ -118,26 +118,26 @@ func collapseRepeats(text string) string {
 	if len(text) == 0 {
 		return text
 	}
-	
+
 	var result strings.Builder
 	lastChar := rune(0)
 	lastWasLetter := false
-	
+
 	for _, char := range text {
 		isLetter := unicode.IsLetter(char)
-		
+
 		// Only collapse if it's a letter and the last char was also a letter
 		if isLetter && lastWasLetter && char == lastChar {
 			// Skip this repeated letter
 			continue
 		}
-		
+
 		// Write the character
 		result.WriteRune(char)
 		lastChar = char
 		lastWasLetter = isLetter
 	}
-	
+
 	return result.String()
 }
 
@@ -148,29 +148,29 @@ func IsWordConfirmed(cleanedInput string, canonicalWord string) bool {
 	if cleanedInput == canonicalWord {
 		return true
 	}
-	
+
 	// Contains match (for phrases like "kill myself")
 	if strings.Contains(cleanedInput, canonicalWord) {
 		return true
 	}
-	
+
 	return false
 }
 
 // ContainsConfirmedWord checks if cleaned text contains any confirmed base word
 func ContainsConfirmedWord(cleanedText string, baseWords []string) (bool, []string) {
 	var confirmedWords []string
-	
+
 	// Split cleaned text into words for word-boundary matching
 	words := strings.Fields(cleanedText)
-	
+
 	for _, baseWord := range baseWords {
 		// Check exact match first (for single words like "kill")
 		if cleanedText == baseWord {
 			confirmedWords = append(confirmedWords, baseWord)
 			continue
 		}
-		
+
 		// Check if base word is contained in cleaned text
 		if strings.Contains(cleanedText, baseWord) {
 			// For single words, verify it appears as a whole word (not substring)
@@ -189,7 +189,7 @@ func ContainsConfirmedWord(cleanedText string, baseWords []string) (bool, []stri
 			}
 		}
 	}
-	
+
 	return len(confirmedWords) > 0, confirmedWords
 }
 
@@ -198,21 +198,21 @@ func ContainsConfirmedWord(cleanedText string, baseWords []string) (bool, []stri
 func CheckContent(message string) (hasThreat bool, hasSelfHarm bool, matchedKeywords []string) {
 	// Step 1: Clean the input to canonical form
 	cleanedText := CleanText(message)
-	
+
 	// Step 2: Check against base threat words (canonical dictionary)
 	threatConfirmed, threatWords := ContainsConfirmedWord(cleanedText, baseThreatWords)
 	if threatConfirmed {
 		hasThreat = true
 		matchedKeywords = append(matchedKeywords, threatWords...)
 	}
-	
+
 	// Step 3: Check against base self-harm words (canonical dictionary)
 	selfHarmConfirmed, selfHarmWords := ContainsConfirmedWord(cleanedText, baseSelfHarmWords)
 	if selfHarmConfirmed {
 		hasSelfHarm = true
 		matchedKeywords = append(matchedKeywords, selfHarmWords...)
 	}
-	
+
 	return hasThreat, hasSelfHarm, matchedKeywords
 }
 
@@ -227,20 +227,20 @@ func GetIPAddress(r *http.Request) string {
 			return strings.TrimSpace(ips[0])
 		}
 	}
-	
+
 	// Check X-Real-IP header
 	realIP := r.Header.Get("X-Real-IP")
 	if realIP != "" {
 		return realIP
 	}
-	
+
 	// Fall back to RemoteAddr
 	ip := r.RemoteAddr
 	// Remove port if present
 	if idx := strings.LastIndex(ip, ":"); idx != -1 {
 		ip = ip[:idx]
 	}
-	
+
 	return ip
 }
 
@@ -281,14 +281,14 @@ func IsIPBlocked(ipAddress string) (bool, *models.BlockedIP, error) {
 		WHERE ip_address = $1 AND is_active = true AND expires_at > $2
 		LIMIT 1
 	`, ipAddress, time.Now()).Scan(&id, &blockedIP.CreatedAt, &blockedIP.ExpiresAt, &blockedIP.IPAddress, &blockedIP.Reason, &blockedIP.IsActive)
-	
+
 	if err == sql.ErrNoRows {
 		return false, nil, nil
 	}
 	if err != nil {
 		return false, nil, err
 	}
-	
+
 	// Convert UUID to string for ID field
 	blockedIP.ID = id.String()
 	return true, &blockedIP, nil
@@ -304,7 +304,7 @@ func BlockIP(ipAddress string, reason string, durationDays int) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Create new block
 	_, err = database.PostgresDB.Exec(`
 		INSERT INTO blocked_ips (id, created_at, expires_at, ip_address, reason, is_active)
@@ -327,23 +327,23 @@ func UnblockIP(ipAddress string) error {
 func CleanupOldViolations(hoursOld int) error {
 	// Calculate cutoff time
 	cutoffTime := time.Now().Add(-time.Duration(hoursOld) * time.Hour)
-	
+
 	// Delete violations older than cutoff time
 	// Note: This does NOT delete blocked_ips - those are kept separately
 	result, err := database.PostgresDB.Exec(`
 		DELETE FROM violations WHERE created_at < $1
 	`, cutoffTime)
-	
+
 	if err != nil {
 		return err
 	}
-	
+
 	// Log cleanup (optional, can be removed if not needed)
 	if rowsAffected, err := result.RowsAffected(); err == nil && rowsAffected > 0 {
 		// You can add logging here if needed
 		// log.Printf("Cleaned up %d old violations (older than %d hours)", rowsAffected, hoursOld)
 	}
-	
+
 	return nil
 }
 
@@ -356,18 +356,17 @@ func StartViolationCleanup(cleanupIntervalHours int, violationsAgeHours int) {
 	if violationsAgeHours <= 0 {
 		violationsAgeHours = 6 // Default: delete violations older than 6 hours
 	}
-	
+
 	go func() {
 		ticker := time.NewTicker(time.Duration(cleanupIntervalHours) * time.Hour)
 		defer ticker.Stop()
-		
+
 		// Run cleanup immediately on startup
 		_ = CleanupOldViolations(violationsAgeHours)
-		
+
 		// Then run periodically
 		for range ticker.C {
 			_ = CleanupOldViolations(violationsAgeHours)
 		}
 	}()
 }
-

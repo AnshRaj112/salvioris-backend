@@ -416,3 +416,105 @@ func UnblockIP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// GetUsers returns all users (admin only). Does not include password_hash.
+func GetUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	rows, err := database.PostgresDB.Query(`
+		SELECT id, username, created_at, is_active
+		FROM users
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to fetch users",
+			"users":   []interface{}{},
+		})
+		return
+	}
+	defer rows.Close()
+
+	userList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, username string
+		var createdAt time.Time
+		var isActive bool
+		if err := rows.Scan(&id, &username, &createdAt, &isActive); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": "Failed to scan users",
+				"users":   []interface{}{},
+			})
+			return
+		}
+		userList = append(userList, map[string]interface{}{
+			"id":         id,
+			"username":   username,
+			"created_at": createdAt,
+			"is_active":  isActive,
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"users":   userList,
+		"count":   len(userList),
+	})
+}
+
+// DeleteUser deletes a user by ID (admin only). Cascades to related tables.
+func DeleteUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	userID := r.URL.Query().Get("id")
+	if userID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "User ID is required",
+		})
+		return
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Invalid user ID",
+		})
+		return
+	}
+
+	result, err := database.PostgresDB.Exec(`DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to delete user: " + err.Error(),
+		})
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "User not found",
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "User deleted successfully",
+	})
+}
+

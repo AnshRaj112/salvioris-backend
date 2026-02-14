@@ -194,3 +194,54 @@ func GetContacts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DeleteContact deletes a contact submission by ID (admin only)
+func DeleteContact(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	contactID := r.URL.Query().Get("id")
+	if contactID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SubmitContactResponse{
+			Success: false,
+			Message: "Contact ID is required",
+		})
+		return
+	}
+	if _, err := uuid.Parse(contactID); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(SubmitContactResponse{
+			Success: false,
+			Message: "Invalid contact ID",
+		})
+		return
+	}
+
+	result, err := database.PostgresDB.Exec(`DELETE FROM contact_us WHERE id = $1`, contactID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(SubmitContactResponse{
+			Success: false,
+			Message: "Failed to delete contact",
+		})
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(SubmitContactResponse{
+			Success: false,
+			Message: "Contact not found",
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(SubmitContactResponse{
+		Success: true,
+		Message: "Contact deleted successfully",
+	})
+}
+
