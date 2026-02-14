@@ -54,6 +54,18 @@ func Load() *Config {
 			}
 		}
 	}
+	// Production: if backend host is e.g. backend.salvioris.com, allow https://salvioris.com and https://www.salvioris.com so OPTIONS preflight doesn't get 403
+	if env == "production" && allowedHost != "" {
+		parts := strings.Split(allowedHost, ".")
+		if len(parts) >= 2 {
+			domain := strings.Join(parts[1:], ".")
+			for _, origin := range []string{"https://" + domain, "https://www." + domain} {
+				if !containsOrigin(allowedOrigins, origin) {
+					allowedOrigins = append(allowedOrigins, origin)
+				}
+			}
+		}
+	}
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"http://localhost:3000"}
 	}
@@ -88,6 +100,16 @@ func parseOrigins(s string) []string {
 		}
 	}
 	return out
+}
+
+func containsOrigin(list []string, o string) bool {
+	o = strings.TrimSpace(strings.ToLower(o))
+	for _, v := range list {
+		if strings.TrimSpace(strings.ToLower(v)) == o {
+			return true
+		}
+	}
+	return false
 }
 
 // IsProduction returns true when ENV is set to "production".
