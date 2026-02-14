@@ -10,6 +10,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/models"
+	"github.com/AnshRaj112/serenify-backend/pkg/clientip"
 	"github.com/google/uuid"
 )
 
@@ -216,32 +217,9 @@ func CheckContent(message string) (hasThreat bool, hasSelfHarm bool, matchedKeyw
 	return hasThreat, hasSelfHarm, matchedKeywords
 }
 
-// GetIPAddress extracts IP address from request
+// GetIPAddress returns the real client IP (Cloudflare CF-Connecting-IP, else RemoteAddr via net.SplitHostPort).
 func GetIPAddress(r *http.Request) string {
-	// Check X-Forwarded-For header (for proxies/load balancers)
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		// Take the first IP if there are multiple
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
-	}
-
-	// Check X-Real-IP header
-	realIP := r.Header.Get("X-Real-IP")
-	if realIP != "" {
-		return realIP
-	}
-
-	// Fall back to RemoteAddr
-	ip := r.RemoteAddr
-	// Remove port if present
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-
-	return ip
+	return clientip.RealClientIP(r)
 }
 
 // RecordViolation records a content violation

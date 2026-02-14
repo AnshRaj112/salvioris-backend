@@ -126,8 +126,16 @@ func main() {
 	})
 	r.Use(corsMiddleware.Handler)
 
-	// Apply rate limiting middleware to all routes
-	r.Use(middleware.RateLimitMiddleware)
+	// Production: SecurityHeaders → HostCheck (HOST) → GlobalRateLimit → LoginRateLimit
+	// Non-production: Redis-based rate limit only
+	if cfg.IsProduction() {
+		for _, mw := range middleware.ProductionSecurity(cfg.AllowedHost) {
+			r.Use(mw)
+		}
+		log.Println("✅ Production security enabled (HOST=" + cfg.AllowedHost + ", security headers, host check, rate limiting)")
+	} else {
+		r.Use(middleware.RateLimitMiddleware)
+	}
 
 	// Health check (no rate limit)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
