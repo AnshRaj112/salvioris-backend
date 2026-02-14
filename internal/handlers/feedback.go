@@ -94,6 +94,9 @@ func SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 
 // GetFeedbacks handles getting all feedbacks (admin only)
 func GetFeedbacks(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	// Count total feedbacks
 	var total int64
 	err := database.PostgresDB.QueryRow("SELECT COUNT(*) FROM feedbacks").Scan(&total)

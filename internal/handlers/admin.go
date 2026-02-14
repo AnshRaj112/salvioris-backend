@@ -13,7 +13,9 @@ import (
 
 // GetPendingTherapists returns all therapists with is_approved = false
 func GetPendingTherapists(w http.ResponseWriter, r *http.Request) {
-	// Set CORS headers
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	rows, err := database.PostgresDB.Query(`
@@ -80,6 +82,9 @@ func GetPendingTherapists(w http.ResponseWriter, r *http.Request) {
 
 // ApproveTherapist approves a therapist by ID
 func ApproveTherapist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	therapistID := r.URL.Query().Get("id")
 	if therapistID == "" {
 		http.Error(w, "Therapist ID is required", http.StatusBadRequest)
@@ -123,6 +128,9 @@ func ApproveTherapist(w http.ResponseWriter, r *http.Request) {
 
 // RejectTherapist rejects a therapist by ID (deletes the application)
 func RejectTherapist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	therapistID := r.URL.Query().Get("id")
 	if therapistID == "" {
 		http.Error(w, "Therapist ID is required", http.StatusBadRequest)
@@ -165,6 +173,9 @@ func RejectTherapist(w http.ResponseWriter, r *http.Request) {
 
 // GetApprovedTherapists returns all approved therapists
 func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	// Try to get from cache
 	cacheKey := services.CacheKey("therapists", "approved")
 	var cachedResponse map[string]interface{}
@@ -245,6 +256,9 @@ func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 
 // GetViolations returns all content violations
 func GetViolations(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	rows, err := database.PostgresDB.Query(`
@@ -294,6 +308,9 @@ func GetViolations(w http.ResponseWriter, r *http.Request) {
 
 // GetBlockedIPs returns all currently blocked IP addresses
 func GetBlockedIPs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	rows, err := database.PostgresDB.Query(`
@@ -338,8 +355,11 @@ func GetBlockedIPs(w http.ResponseWriter, r *http.Request) {
 
 // UnblockIP unblocks an IP address
 func UnblockIP(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	ipAddress := r.URL.Query().Get("ip")
 	if ipAddress == "" {
 		w.WriteHeader(http.StatusBadRequest)

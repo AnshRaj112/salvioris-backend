@@ -165,6 +165,9 @@ func SubmitTherapistWaitlist(w http.ResponseWriter, r *http.Request) {
 
 // GetUserWaitlist handles getting all user waitlist entries (admin only)
 func GetUserWaitlist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	// Count total entries
 	var total int64
 	err := database.PostgresDB.QueryRow("SELECT COUNT(*) FROM user_waitlist").Scan(&total)
@@ -241,6 +244,9 @@ func GetUserWaitlist(w http.ResponseWriter, r *http.Request) {
 
 // GetTherapistWaitlist handles getting all therapist waitlist entries (admin only)
 func GetTherapistWaitlist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	// Count total entries
 	var total int64
 	err := database.PostgresDB.QueryRow("SELECT COUNT(*) FROM therapist_waitlist").Scan(&total)

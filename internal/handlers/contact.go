@@ -116,6 +116,9 @@ func SubmitContact(w http.ResponseWriter, r *http.Request) {
 
 // GetContacts handles getting all contact submissions (admin only)
 func GetContacts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
 	// Count total contacts
 	var total int64
 	err := database.PostgresDB.QueryRow("SELECT COUNT(*) FROM contact_us").Scan(&total)
