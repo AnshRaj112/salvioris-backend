@@ -51,7 +51,7 @@ func LoadChatHistory(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	msgs, hasMore, err := services.LoadChatMessages(ctx, groupID, before, limit)
+	msgs, hasMore, err := services.LoadChatMessagesWithCache(ctx, groupID, before, limit)
 	if err != nil {
 		// Fail open: log the error but return an empty history instead of a 500
 		log.Printf("LoadChatHistory: failed to load messages for group %s: %v", groupID, err)

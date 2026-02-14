@@ -87,8 +87,13 @@ func startGlobalCleanupOnce() {
 }
 
 // GlobalRateLimit limits each IP to 1 req/s, burst 10. Returns 429 when exceeded.
+// /api/chat/history is exempt (uses ChatHistoryRateLimit with higher limits).
 func GlobalRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/api/chat/history" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ip := clientip.RealClientIP(r)
 		if !getGlobalLimiter(ip).Allow() {
 			w.Header().Set("Content-Type", "application/json")

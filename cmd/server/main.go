@@ -128,6 +128,9 @@ func main() {
 		r.Use(middleware.RateLimitMiddleware)
 	}
 
+	// Chat history rate limit: applies only to GET /api/chat/history (auth: 30/min, anon: 10/min)
+	r.Use(middleware.ChatHistoryRateLimit)
+
 	// Health check (no rate limit)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))

@@ -154,15 +154,18 @@ func handleIncomingChatMessage(ctx context.Context, userID uuid.UUID, msg wsMess
 	// Publish to Redis FIRST. All instances receive, then fan-out.
 	_ = services.PublishChatEvent(ctx, event)
 
-	// Persist asynchronously to Mongo.
-	services.SaveChatMessageAsync(services.ChatMessage{
+	cm := services.ChatMessage{
 		GroupID:   msg.GroupID,
 		SenderID:  userID.String(),
 		Username:  username,
-		Message:   msg.Text,
+		Message:   event.Message,
 		Timestamp: event.Timestamp,
 		Status:    "delivered",
-	})
+	}
+	// Persist asynchronously to Mongo.
+	services.SaveChatMessageAsync(cm)
+	// Push to Redis recent cache (LPUSH + LTRIM 50).
+	services.PushMessageToRecentCache(cm)
 }
 
 
