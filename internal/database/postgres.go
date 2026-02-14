@@ -244,6 +244,19 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_group_messages_group_id ON group_messages(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_messages_created_at ON group_messages(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_messages_user_id ON group_messages(user_id)`,
+
+		// Activity events table (for analytics: page views, recurring users)
+		`CREATE TABLE IF NOT EXISTS activity_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			path VARCHAR(500) NOT NULL,
+			event_type VARCHAR(50) NOT NULL DEFAULT 'page_view',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_events_created_at ON activity_events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_events_user_id ON activity_events(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_events_path ON activity_events(path)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_events_user_created ON activity_events(user_id, created_at)`,
 	}
 
 	for _, query := range queries {

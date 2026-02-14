@@ -41,7 +41,11 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/admin/groups", handlers.AdminGetAllGroups)
 	r.Get("/api/admin/groups/members", handlers.AdminGetGroupMembers)
 	r.Delete("/api/admin/groups", handlers.AdminDeleteGroup)
-	
+	r.Get("/api/admin/insights", handlers.GetInsights)
+
+	// Activity tracking (for analytics; optional auth)
+	r.Post("/api/activity", handlers.RecordActivity)
+
 	// Vent routes
 	r.Post("/api/vent", handlers.CreateVent)
 	r.Get("/api/vent", handlers.GetVents)
