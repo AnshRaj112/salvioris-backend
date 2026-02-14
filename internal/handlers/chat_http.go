@@ -18,12 +18,32 @@ type LoadChatHistoryResponse struct {
 	HasMore  bool                 `json:"has_more"`
 }
 
-// LoadChatHistory loads paginated offline messages for a group.
+// LoadChatHistory loads paginated offline messages for a group (requires authentication).
 // Query params:
 //   group_id (required)
 //   before   (optional RFC3339 timestamp for pagination)
 //   limit    (optional, default 50)
 func LoadChatHistory(w http.ResponseWriter, r *http.Request) {
+	token := extractBearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Authentication required",
+		})
+		return
+	}
+	if _, ok, err := services.ValidateSession(token); err != nil || !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Invalid or expired session",
+		})
+		return
+	}
+
 	groupID := r.URL.Query().Get("group_id")
 	if groupID == "" {
 		w.WriteHeader(http.StatusBadRequest)

@@ -431,10 +431,19 @@ func DeleteGroup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetGroups handles getting all public groups
+// GetGroups handles getting all public groups (requires authentication).
 func GetGroups(w http.ResponseWriter, r *http.Request) {
-	// Optional: get current user for is_creator flag
-	currentUserID, _ := getCurrentUser(r)
+	currentUserID, err := getCurrentUser(r)
+	if err != nil || currentUserID == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(GetGroupsResponse{
+			Success: false,
+			Groups:  []map[string]interface{}{},
+			Total:   0,
+		})
+		return
+	}
 
 	// Get query parameters
 	limitStr := r.URL.Query().Get("limit")
@@ -482,7 +491,7 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 		SELECT COUNT(*)
 		FROM groups g
 		` + whereClause
-	err := database.PostgresDB.QueryRow(countQuery, args...).Scan(&total)
+	err = database.PostgresDB.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -544,7 +553,7 @@ func GetGroups(w http.ResponseWriter, r *http.Request) {
 			"is_public":    true,
 			"tags":         []string(tags),
 		}
-		if currentUserID != nil && createdBy == *currentUserID {
+		if createdBy == *currentUserID {
 			groupMap["is_creator"] = true
 		} else {
 			groupMap["is_creator"] = false
@@ -801,8 +810,21 @@ func RemoveMember(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetGroupMembers handles getting members of a group
+// GetGroupMembers handles getting members of a group (requires authentication).
 func GetGroupMembers(w http.ResponseWriter, r *http.Request) {
+	userID, err := getCurrentUser(r)
+	if err != nil || userID == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(GetGroupMembersResponse{
+			Success: false,
+			Members: []map[string]interface{}{},
+			Total:   0,
+		})
+		return
+	}
+	_ = userID // Auth check only
+
 	// Get group ID from URL
 	groupIDStr := r.URL.Query().Get("group_id")
 	if groupIDStr == "" {

@@ -15,6 +15,19 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// requireJournalAuth validates the session and returns the authenticated user's ID. Returns ("", false) if not authenticated.
+func requireJournalAuth(r *http.Request) (string, bool) {
+	token := extractBearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		return "", false
+	}
+	userID, ok, err := services.ValidateSession(token)
+	if err != nil || !ok {
+		return "", false
+	}
+	return userID.String(), true
+}
+
 type CreateJournalRequest struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
@@ -34,8 +47,19 @@ type GetJournalsResponse struct {
 	Total    int64                    `json:"total"`
 }
 
-// CreateJournal creates a new journal entry for a logged-in user
+// CreateJournal creates a new journal entry for a logged-in user (requires authentication).
 func CreateJournal(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireJournalAuth(r)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(CreateJournalResponse{
+			Success: false,
+			Message: "Authentication required",
+		})
+		return
+	}
+
 	var req CreateJournalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -43,16 +67,6 @@ func CreateJournal(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(CreateJournalResponse{
 			Success: false,
 			Message: "Invalid request body",
-		})
-		return
-	}
-
-	if req.UserID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(CreateJournalResponse{
-			Success: false,
-			Message: "User ID is required",
 		})
 		return
 	}
@@ -79,7 +93,7 @@ func CreateJournal(w http.ResponseWriter, r *http.Request) {
 		ID:           primitive.NewObjectID(),
 		CreatedAt:    now,
 		UpdatedAt:    now,
-		UserIDString: req.UserID,
+		UserIDString: userID, // From session only; body user_id is ignored
 		Title:        req.Title,
 		Content:      req.Content,
 	}
@@ -111,23 +125,23 @@ func CreateJournal(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetJournals returns journal entries for a user, newest first
+// GetJournals returns journal entries for the authenticated user only (requires authentication).
 func GetJournals(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	limitStr := r.URL.Query().Get("limit")
-	skipStr := r.URL.Query().Get("skip")
-
-	if userID == "" {
+	userID, ok := requireJournalAuth(r)
+	if !ok {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(GetJournalsResponse{
 			Success:  false,
-			Message:  "user_id is required",
+			Message:  "Authentication required",
 			Journals: []map[string]interface{}{},
 			Total:    0,
 		})
 		return
 	}
+
+	limitStr := r.URL.Query().Get("limit")
+	skipStr := r.URL.Query().Get("skip")
 
 	limit := 20
 	if limitStr != "" {
