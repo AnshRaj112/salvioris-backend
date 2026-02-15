@@ -273,15 +273,36 @@ func GetVents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// For signed-in users: delete vents from previous days and only show today's vents
+	var startOfTodayUTC time.Time
+	if userID != "" {
+		now := time.Now().UTC()
+		startOfTodayUTC = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+		// Delete all vents for this user that are from before today
+		deleteFilter := bson.M{
+			"created_at": bson.M{"$lt": startOfTodayUTC},
+		}
+		if _, err := uuid.Parse(userID); err == nil {
+			deleteFilter["user_id_string"] = userID
+		} else {
+			userObjectID, err := primitive.ObjectIDFromHex(userID)
+			if err == nil {
+				deleteFilter["user_id"] = userObjectID
+			}
+		}
+		_, _ = database.DB.Collection("vents").DeleteMany(ctx, deleteFilter)
+	}
+
 	// Build filter
 	filter := bson.M{}
 	if userID != "" {
+		// Only return vents from today (after day change, previous days are already deleted above)
+		filter["created_at"] = bson.M{"$gte": startOfTodayUTC}
 		// Try to match either user_id_string (UUID) or user_id (ObjectID for backward compatibility)
-		// First try UUID format
 		if _, err := uuid.Parse(userID); err == nil {
 			filter["user_id_string"] = userID
 		} else {
-			// Try ObjectID format for backward compatibility
 			userObjectID, err := primitive.ObjectIDFromHex(userID)
 			if err == nil {
 				filter["user_id"] = userObjectID
