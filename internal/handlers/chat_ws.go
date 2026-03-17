@@ -8,6 +8,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/gorilla/websocket"
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var upgrader = websocket.Upgrader{
@@ -155,6 +156,7 @@ func handleIncomingChatMessage(ctx context.Context, userID uuid.UUID, msg wsMess
 	_ = services.PublishChatEvent(ctx, event)
 
 	cm := services.ChatMessage{
+		ID:        primitive.NewObjectID(),
 		GroupID:   msg.GroupID,
 		SenderID:  userID.String(),
 		Username:  username,
