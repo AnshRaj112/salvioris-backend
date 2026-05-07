@@ -1,0 +1,102 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+
+% Define colors
+\definecolor{techblue}{RGB}{0, 122, 204}
+\definecolor{darkgray}{RGB}{50, 50, 50}
+
+\title{\textbf{Software Requirements Specification (SRS) \\ Serenify Mental Health Platform}}
+\author{SALVIORIS Development Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Introduction}
+\subsection{Purpose}
+This document specifies the software requirements for the Serenify Mental Health Platform. It provides a comprehensive overview of the system's functional and non-functional requirements, technology stack, and architectural design.
+
+\subsection{Scope}
+Serenify is a web-based application designed to facilitate anonymous emotional support, journaling, and professional therapy connections. The system consists of a Go-based backend API and a Next.js frontend application.
+
+\section{Technology Stack}
+
+\subsection{Frontend Environment}
+\begin{itemize}
+    \item \textbf{Framework}: Next.js 15 (App Router)
+    \item \textbf{Library}: React 19
+    \item \textbf{Language}: TypeScript
+    \item \textbf{Styling}: Tailwind CSS, Sass
+    \item \textbf{UI Components}: Radix UI, Lucide React
+    \item \textbf{State Management}: React Context API, Hooks
+    \item \textbf{Form Handling}: React Hook Form, Zod
+\end{itemize}
+
+\subsection{Backend Environment}
+\begin{itemize}
+    \item \textbf{Language}: Go (Golang) 1.25+
+    \item \textbf{Router}: Chi v5
+    \item \textbf{API Style}: RESTful
+    \item \textbf{Authentication}: JWT (JSON Web Tokens)
+    \item \textbf{Password Security}: Argon2
+    \item \textbf{Media Management}: Cloudinary
+\end{itemize}
+
+\subsection{Data Persistence}
+\begin{itemize}
+    \item \textbf{Relational Database}: PostgreSQL (User accounts, Group metadata, Audit logs)
+    \item \textbf{NoSQL Database}: MongoDB (Vents, Journals, Chat history, Therapist profiles)
+    \item \textbf{Cache Layer}: Redis (Sessions, Rate limiting, Real-time messaging)
+\end{itemize}
+
+\section{Functional Requirements}
+
+\subsection{User Management}
+\begin{itemize}
+    \item \textbf{FR-1}: Users shall be able to register and log in securely.
+    \item \textbf{FR-2}: The system shall support account recovery via encrypted email/phone data.
+    \item \textbf{FR-3}: Therapists shall be able to apply for professional accounts with credential uploads.
+    \item \textbf{FR-4}: Administrators shall be able to approve or reject therapist applications.
+\end{itemize}
+
+\subsection{Content \& Interaction}
+\begin{itemize}
+    \item \textbf{FR-5}: Users shall be able to post anonymous emotional vents.
+    \item \textbf{FR-6}: Users shall be able to maintain a private, encrypted personal journal.
+    \item \textbf{FR-7}: The system shall support real-time chat groups with message persistence.
+    \item \textbf{FR-8}: Users shall be able to search and view verified therapist profiles.
+\end{itemize}
+
+\section{Non-Functional Requirements}
+
+\subsection{Performance}
+\begin{itemize}
+    \item \textbf{NFR-1}: The system shall respond to API requests within 200ms on average.
+    \item \textbf{NFR-2}: Frontend pages shall load in under 2 seconds using Next.js optimizations.
+\end{itemize}
+
+\subsection{Security}
+\begin{itemize}
+    \item \textbf{NFR-3}: All user passwords must be hashed using the Argon2 algorithm.
+    \item \textbf{NFR-4}: Sensitive data must be encrypted at rest and in transit (TLS/SSL).
+    \item \textbf{NFR-5}: API rate limiting must be enforced to prevent brute-force attacks.
+\end{itemize}
+
+\subsection{Scalability}
+\begin{itemize}
+    \item \textbf{NFR-6}: The system must support horizontal scaling of the backend services.
+    \item \textbf{NFR-7}: The NoSQL database (MongoDB) must handle high-volume write operations for chat and vents.
+\end{itemize}
+
+\section{System Architecture}
+The system follows a \textbf{Clean Architecture} pattern on the backend and a \textbf{Component-Based Architecture} on the frontend. Communication between the two is facilitated through a RESTful API and WebSockets for real-time features.
+
+\end{document}
