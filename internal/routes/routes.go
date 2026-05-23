@@ -88,6 +88,10 @@ func SetupRoutes(r *chi.Mux) {
 	// Realtime chat API (MongoDB history + Redis Pub/Sub)
 	r.Get("/api/chat/history", handlers.LoadChatHistory)
 
+	// Abuse & crisis report governed disclosure routes
+	r.Post("/api/reports/submit", handlers.SubmitAbuseReport)
+	r.Post("/api/reports/review/{id}", handlers.ReviewAbuseReport)
+
 	// WebSocket endpoint for realtime group chat (Discord-style gateway)
 	r.Get("/ws/chat", handlers.ChatWebSocket)
 }

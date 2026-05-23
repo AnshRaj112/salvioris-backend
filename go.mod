@@ -5,7 +5,6 @@ go 1.25
 require (
 	github.com/cloudinary/cloudinary-go/v2 v2.7.0
 	github.com/go-chi/chi/v5 v5.2.4
-	github.com/go-chi/cors v1.2.1
 	github.com/google/uuid v1.2.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/joho/godotenv v1.5.1
@@ -13,6 +12,7 @@ require (
 	github.com/redis/go-redis/v9 v9.5.1
 	go.mongodb.org/mongo-driver v1.16.1
 	golang.org/x/crypto v0.28.0
+	golang.org/x/time v0.14.0
 )
 
 require (
@@ -31,5 +31,4 @@ require (
 	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
 	golang.org/x/text v0.19.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 )

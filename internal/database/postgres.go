@@ -177,6 +177,16 @@ func InitPostgresTables() error {
 			is_active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
 
+		// Staff sessions table for MFA status tracking
+		`CREATE TABLE IF NOT EXISTS staff_sessions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			actor_id UUID NOT NULL,
+			mfa_verified BOOLEAN NOT NULL DEFAULT FALSE,
+			last_mfa_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
 		// Groups table (public community groups)
 		// NOTE: name and slug must both be globally unique (case-insensitive for name).
 		// slug is used for shareable URLs: /community/group/<slug>
@@ -255,8 +265,45 @@ func InitPostgresTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_events_created_at ON activity_events(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_events_user_id ON activity_events(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_activity_events_path ON activity_events(path)`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_events_user_created ON activity_events(user_id, created_at)`,
+
+		// Abuse reports ledger
+		`CREATE TABLE IF NOT EXISTS abuse_reports (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			reported_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			encrypted_payload TEXT NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
+		// Security audit logs ledger (Append-only)
+		`CREATE TABLE IF NOT EXISTS security_audit_logs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			event_type VARCHAR(100) NOT NULL,
+			target_id VARCHAR(255) NOT NULL,
+			actor_id VARCHAR(255) NOT NULL,
+			actor_role VARCHAR(50) NOT NULL DEFAULT 'unknown',
+			reason TEXT NOT NULL,
+			ip_address VARCHAR(45) NOT NULL,
+			user_agent TEXT NOT NULL DEFAULT 'unknown',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_security_audit_actor ON security_audit_logs(actor_id)`,
+
+		// Function and trigger to enforce append-only nature
+		`CREATE OR REPLACE FUNCTION block_modifications()
+		RETURNS TRIGGER AS $$
+		BEGIN
+			RAISE EXCEPTION 'Database Governance Policy: Modifications to audit logs are strictly prohibited';
+		END;
+		$$ LANGUAGE plpgsql`,
+
+		`DROP TRIGGER IF EXISTS restrict_audit_mutations ON security_audit_logs`,
+
+		`CREATE TRIGGER restrict_audit_mutations
+		BEFORE UPDATE OR DELETE ON security_audit_logs
+		FOR EACH ROW EXECUTE FUNCTION block_modifications()`,
 	}
 
 	for _, query := range queries {

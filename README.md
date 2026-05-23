@@ -49,6 +49,49 @@ serenify-backend/
 | **Storage** | [Cloudinary](https://cloudinary.com/) | Cloud-based image and video management. |
 | **Drivers** | `lib/pq`, `mongo-driver`, `go-redis` | Official database drivers. |
 
+## 🔐 Security & Regulatory Compliance (E2EE & HIPAA-Ready)
+
+Serenify is engineered from the ground up as a **zero-trust, privacy-first mental health communication platform**. By incorporating client-side End-to-End Encryption (E2EE) and administrative/technical safeguards, the platform is designed to be fully **HIPAA-Ready**.
+
+### 🔒 1. Zero-Knowledge End-to-End Encryption (E2EE)
+All clinical and peer messaging data is encrypted on-device before it reaches the backend, ensuring that only the sender and the designated recipients can read the message.
+
+*   **Asymmetric Cryptography:** Uses **X25519** for ephemeral Diffie-Hellman (ECDH) key exchanges and **Ed25519** for cryptographic device identity signatures.
+*   **Symmetric Encryption:** All messages are encrypted locally using **AES-256-GCM** with 96-bit random nonces.
+*   **Cryptographic Binding:** Messages bind the ciphertext to the sender's device and the target group via a binding hash signed with the sender’s non-extractable Ed25519 key. This prevents message spoofing or network injection.
+*   **Secure Storage:** Device keypairs are loaded into the browser's IndexedDB as non-extractable CryptoKeys via the native Web Crypto API, preventing malicious cross-site scripting (XSS) extraction.
+
+### 🛡️ 2. HIPAA Technical & Administrative Safeguards
+To comply with HIPAA Security Rule requirements (§164.312), Serenify implements robust access governance, auditing, and telemetry boundaries:
+
+```mermaid
+graph TD
+    subgraph Client [Web Client - Web Crypto API]
+        E2EE[E2EE Message Payload] -->|Secure Transit| Gateway[Chi API Gateway]
+        LocalScan[Local Crisis scanner] -->|On-Device Escalation| UI[Local Crisis UI]
+    end
+
+    subgraph Backend [Go API Gateway & Enclave]
+        Gateway -->|Verify WS Token| RedisOTP[Redis Replay Cache]
+        Gateway -->|Route Context| RBAC[RBAC & MFA Middleware]
+        RBAC -->|Save Ciphertext| MongoDB[(MongoDB E2EE Vault)]
+        RBAC -->|Audited Decrypt| Enclave[Governed Disclosure Service]
+    end
+
+    subgraph Security Ledger [WORM Vault]
+        RBAC -->|Audit Write| Postgres[(PostgreSQL Audit Ledger)]
+        Postgres -.->|Trigger Exception| Lock[Append-Only Constraint]
+    end
+```
+
+*   **Immutable Write-Once Audit Ledger (§164.312(b)):** Security events, privileged logins, and disclosure reviews are written to the `security_audit_logs` database ledger. A PostgreSQL engine trigger blocks all `UPDATE` and `DELETE` queries, forming a hardware-resilient Write-Once Read-Many (WORM) store.
+*   **Role-Based Access Control (RBAC):** Access permission scopes restrict administrative, moderator, engineer, and support roles based on least-privilege principles.
+*   **Hardware Multi-Factor Authentication (MFA):** Access to privileged portals mandates WebAuthn FIDO2 hardware keys, enforced by server-side active session checks.
+*   **WebSocket Replay Prevention:** WebSocket upgrades require single-use tokens backed by Redis cache buffers that expire instantly upon connection.
+*   **Structured Telemetry Sanitization:** A custom regular expression parser sanitizes application output, scrubbing E2EE keys, PII (emails, phone numbers), and plaintext traces before logs flow to external providers.
+*   **Governed Moderation (No Backdoors):** Moderators cannot browse user messages. If abuse occurs, clients encrypt a WhatsApp-style message disclosure package under the Moderation Team’s Curve25519 public key. Decryption triggers high-priority compliance audit events.
+*   **On-Device Psychiatric Safety Scanning:** Self-harm and acute crisis detection are executed in a browser thread locally to maintain privacy, offering local counselor routing without notifying the server.
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -108,6 +151,8 @@ Ensure you have the following installed on your local machine:
 
 ### Running the Application
 
+#### Option 1: Running Locally (Development)
+
 To start the server in development mode:
 
 ```bash
@@ -115,6 +160,27 @@ go run cmd/server/main.go
 ```
 
 The server will initialize and listen on `http://localhost:8080`. You should see logs indicating successful connections to PostgreSQL, Redis, and MongoDB.
+
+#### Option 2: Running via Docker
+
+You can build and run the application locally as a Docker container. Ensure your database services are accessible from within the container:
+
+```bash
+# Build the Docker image
+docker build -t serenify-backend .
+
+# Run the container (Ensure .env variables match your Docker setup)
+docker run -p 8080:8080 --env-file .env serenify-backend
+```
+
+#### Option 3: Google Cloud Run Deployment
+
+This project includes a `Dockerfile` optimized for Google Cloud Run:
+
+1. Connect your repository to a new Google Cloud Run service.
+2. In the setup, set the Build type to **Dockerfile**.
+3. **Important:** Leave the **Container command** and **Container arguments** completely blank.
+4. Expand the "Containers, Volumes, Networking, Security" section, go to the **Variables & Secrets** tab, and add all required environment variables from your `.env` file.
 
 ## 📡 API Documentation
 
