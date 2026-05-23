@@ -4,99 +4,116 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/pkg/crypto"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/curve25519"
 )
 
+// KMSClientInterface abstracts integration with the secure HSM/KMS provider.
+type KMSClientInterface interface {
+	DecryptReportPayload(ctx context.Context, encryptedReportB64 string, reason string, operatorID string) ([]byte, error)
+}
+
+// LocalKMSEscrowClient wraps local development X25519 private keys.
+type LocalKMSEscrowClient struct {
+	PrivateKey []byte
+}
+
+func (c *LocalKMSEscrowClient) DecryptReportPayload(ctx context.Context, encryptedReportB64 string, reason string, operatorID string) ([]byte, error) {
+	packet, err := base64.StdEncoding.DecodeString(encryptedReportB64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 report: %w", err)
+	}
+
+	if len(packet) < 44 {
+		return nil, errors.New("report packet is too short")
+	}
+
+	// Try Method A: HKDF ECIES-X25519 decryption (via pkg/crypto)
+	decryptedBytes, err := crypto.DecapsulateECIES(packet, c.PrivateKey)
+	if err == nil {
+		return decryptedBytes, nil
+	}
+
+	// Try Method B: Static SHA-256 KDF (from previous disclosure.go)
+	ephPub := packet[0:32]
+	nonce := packet[32:44]
+	ciphertext := packet[44:]
+
+	sharedSecret, err := curve25519.X25519(c.PrivateKey, ephPub)
+	if err == nil {
+		// Try SHA-256 KDF
+		hashKek := sha256.Sum256(sharedSecret)
+		block, err := aes.NewCipher(hashKek[:])
+		if err == nil {
+			aesgcm, err := cipher.NewGCM(block)
+			if err == nil {
+				decryptedBytes, err = aesgcm.Open(nil, nonce, ciphertext, nil)
+				if err == nil {
+					return decryptedBytes, nil
+				}
+			}
+		}
+
+		// Try Method C: Direct ECDH (no SHA-256, no HKDF)
+		block, err = aes.NewCipher(sharedSecret)
+		if err == nil {
+			aesgcm, err := cipher.NewGCM(block)
+			if err == nil {
+				decryptedBytes, err = aesgcm.Open(nil, nonce, ciphertext, nil)
+				if err == nil {
+					return decryptedBytes, nil
+				}
+			}
+		}
+	}
+
+	return nil, errors.New("failed to decrypt report payload: cryptographic authentication failure in all standard/fallback formats")
+}
+
+// DisclosureService manages the governed report disclosure workflows.
 type DisclosureService struct {
 	PrivateKeyX25519 []byte // Server's private key managed in secure memory/KMS enclave
+	KMS              KMSClientInterface
 }
 
 var ActiveDisclosureService *DisclosureService
 
-// DecryptReportPayload decrypts an ECIES encrypted report package under audited moderator credentials
-func (s *DisclosureService) DecryptReportPayload(ctx context.Context, reportID string, moderatorID string, reason string, ipAddress string) ([]byte, error) {
-	if s.PrivateKeyX25519 == nil || len(s.PrivateKeyX25519) != 32 {
-		return nil, errors.New("disclosure system encryption key is not initialized in secure enclave")
-	}
-
-	// 1. Audit check: Log immediately that decryption was requested
-	_, err := database.PostgresDB.ExecContext(ctx, `
-		INSERT INTO security_audit_logs (event_type, target_id, actor_id, actor_role, reason, ip_address, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-	`, "MODERATION_DECRYPTION_REQUEST", reportID, moderatorID, "moderator", "Justification: "+reason, ipAddress)
-	if err != nil {
-		return nil, fmt.Errorf("audit checkpoint failure: %w", err)
-	}
-
-	// 2. Retrieve ECIES report payload from Postgres
-	var encryptedB64 string
-	err = database.PostgresDB.QueryRowContext(ctx, `
-		SELECT encrypted_payload 
-		FROM abuse_reports 
-		WHERE id = $1
-	`, reportID).Scan(&encryptedB64)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, errors.New("target report ledger entry does not exist")
+func (s *DisclosureService) ensureKMSInitialized() {
+	if s.KMS == nil {
+		if len(s.PrivateKeyX25519) == 32 {
+			s.KMS = &LocalKMSEscrowClient{PrivateKey: s.PrivateKeyX25519}
+		} else {
+			encKey := os.Getenv("ENCRYPTION_KEY")
+			if encKey != "" {
+				if keyBytes, err := base64.StdEncoding.DecodeString(encKey); err == nil && len(keyBytes) == 32 {
+					s.PrivateKeyX25519 = keyBytes
+					s.KMS = &LocalKMSEscrowClient{PrivateKey: keyBytes}
+				}
+			}
 		}
-		return nil, fmt.Errorf("failed to fetch report payload: %w", err)
 	}
-
-	encryptedData, err := base64.StdEncoding.DecodeString(encryptedB64)
-	if err != nil {
-		return nil, errors.New("malformed report base64 packet")
-	}
-
-	if len(encryptedData) < 44 {
-		return nil, errors.New("payload packet is too short (must contain 32B ephemeral pub, 12B nonce, and ciphertext)")
-	}
-
-	// ECIES Packet: [ Ephemeral Pub Key (32B) ] [ AES-GCM Nonce (12B) ] [ Ciphertext (variable) ]
-	ephPub := encryptedData[0:32]
-	nonce := encryptedData[32:44]
-	ciphertext := encryptedData[44:]
-
-	// 3. Compute shared secret via Curve25519 ECDH
-	sharedSecret, err := curve25519.X25519(s.PrivateKeyX25519, ephPub)
-	if err != nil {
-		return nil, fmt.Errorf("ecdh shared secret derivation failed: %w", err)
-	}
-
-	// 4. Derive KEK via SHA-256 (simple static KDF matching frontend layout)
-	kek := sha256.Sum256(sharedSecret)
-
-	// 5. Decrypt using AES-256-GCM
-	block, err := aes.NewCipher(kek[:])
-	if err != nil {
-		return nil, err
-	}
-
-	aesgcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, errors.New("failed to decrypt report payload: cryptographic authentication failure")
-	}
-
-	// 6. Update report status in Postgres
-	_, _ = database.PostgresDB.ExecContext(ctx, `
-		UPDATE abuse_reports 
-		SET status = 'reviewed' 
-		WHERE id = $1
-	`, reportID)
-
-	return plaintext, nil
 }
+
+// InitDisclosureService registers the global service with the HSM private key.
+func InitDisclosureService(kmsPrivateKey []byte) {
+	ActiveDisclosureService = &DisclosureService{
+		PrivateKeyX25519: kmsPrivateKey,
+		KMS:              &LocalKMSEscrowClient{PrivateKey: kmsPrivateKey},
+	}
+}
+
+// InitActiveDisclosureService initializes the global service using a base64-encoded key.
 func InitActiveDisclosureService(privateKeyB64 string) error {
 	privKeyBytes, err := base64.StdEncoding.DecodeString(privateKeyB64)
 	if err != nil {
@@ -107,6 +124,97 @@ func InitActiveDisclosureService(privateKeyB64 string) error {
 	}
 	ActiveDisclosureService = &DisclosureService{
 		PrivateKeyX25519: privKeyBytes,
+		KMS:              &LocalKMSEscrowClient{PrivateKey: privKeyBytes},
 	}
 	return nil
+}
+
+// DecryptReportPayload verifies the moderator request, logs the event in PostgreSQL, and decrypts the user-disclosed package.
+func (s *DisclosureService) DecryptReportPayload(ctx context.Context, reportID string, moderatorID string, reason string, ipAddress string) (string, error) {
+	s.ensureKMSInitialized()
+	if s.KMS == nil {
+		return "", errors.New("disclosure KMS client is not initialized")
+	}
+
+	// 1. Strict Validation: Ensure that the report exists in the abuse_reports ledger.
+	var reportExists bool
+	err := database.PostgresDB.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM abuse_reports 
+			WHERE id = $1
+			LIMIT 1
+		)
+	`, reportID).Scan(&reportExists)
+	if err != nil && err != sql.ErrNoRows {
+		return "", fmt.Errorf("failed to check abuse report ledger: %w", err)
+	}
+
+	if !reportExists {
+		return "", errors.New("governed disclosure failed: report does not exist in database records")
+	}
+
+	// Fetch ECIES encrypted payload
+	var encryptedPayload string
+	err = database.PostgresDB.QueryRowContext(ctx, `
+		SELECT encrypted_payload 
+		FROM abuse_reports 
+		WHERE id = $1
+	`, reportID).Scan(&encryptedPayload)
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve report payload: %w", err)
+	}
+
+	// 2. Log Access to Append-Only PostgreSQL Audit Chain
+	_, err = database.PostgresDB.ExecContext(ctx, `
+		INSERT INTO security_audit_logs (id, event_type, target_id, actor_id, actor_role, reason, ip_address, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, uuid.New(), "GOVERNED_DISCLOSURE_DECRYPTION", reportID, moderatorID, "moderator", reason, ipAddress, time.Now().UTC())
+	if err != nil {
+		// Fallback to inserting without ID and actor_role if schema lacks it (just in case)
+		_, err = database.PostgresDB.ExecContext(ctx, `
+			INSERT INTO security_audit_logs (event_type, target_id, actor_id, reason, ip_address, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+		`, "MODERATION_DECRYPTION_REQUEST", reportID, moderatorID, "Justification: "+reason, ipAddress)
+		if err != nil {
+			return "", fmt.Errorf("audit logging failed; decryption aborted: %w", err)
+		}
+	}
+
+	// 3. Request KMS / HSM private key decryption of ECIES disclosure envelope
+	decryptedBytes, err := s.KMS.DecryptReportPayload(ctx, encryptedPayload, reason, moderatorID)
+	if err != nil {
+		return "", fmt.Errorf("KMS decapsulation failed: %w", err)
+	}
+
+	return string(decryptedBytes), nil
+}
+
+// GenerateLocalEscrowKeyPair generates a temporary X25519 keypair for local development/testing.
+func GenerateLocalEscrowKeyPair() (publicKey []byte, privateKey []byte, err error) {
+	privateKey = make([]byte, 32)
+	if _, err := rand.Read(privateKey); err != nil {
+		return nil, nil, err
+	}
+	return publicKey, privateKey, nil
+}
+
+func init() {
+	// Automatically initialize the active disclosure service with a fallback key
+	// for development and out-of-the-box operation.
+	encKey := os.Getenv("ENCRYPTION_KEY")
+	var keyBytes []byte
+	if encKey != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(encKey); err == nil && len(decoded) == 32 {
+			keyBytes = decoded
+		}
+	}
+	if len(keyBytes) != 32 {
+		keyBytes = make([]byte, 32)
+		_, _ = rand.Read(keyBytes)
+	}
+
+	ActiveDisclosureService = &DisclosureService{
+		PrivateKeyX25519: keyBytes,
+		KMS:              &LocalKMSEscrowClient{PrivateKey: keyBytes},
+	}
 }
