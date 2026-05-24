@@ -42,6 +42,8 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/admin/groups/members", handlers.AdminGetGroupMembers)
 	r.Delete("/api/admin/groups", handlers.AdminDeleteGroup)
 	r.Get("/api/admin/insights", handlers.GetInsights)
+	r.Get("/api/admin/reports", handlers.GetAbuseReports)
+	r.Post("/api/admin/groups/block", handlers.AdminBlockGroupMember)
 
 	// Activity tracking (for analytics; optional auth)
 	r.Post("/api/activity", handlers.RecordActivity)
@@ -89,6 +91,7 @@ func SetupRoutes(r *chi.Mux) {
 	r.Get("/api/chat/history", handlers.LoadChatHistory)
 
 	// Abuse & crisis report governed disclosure routes
+	r.Get("/api/reports/escrow-key", handlers.GetEscrowPublicKey)
 	r.Post("/api/reports/submit", handlers.SubmitAbuseReport)
 	r.Post("/api/reports/review/{id}", handlers.ReviewAbuseReport)
 

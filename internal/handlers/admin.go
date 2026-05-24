@@ -8,6 +8,7 @@ import (
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
+	"github.com/AnshRaj112/serenify-backend/pkg/clientip"
 	"github.com/google/uuid"
 )
 
@@ -515,6 +516,128 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "User deleted successfully",
+	})
+}
+
+// GetAbuseReports returns all secure abuse reports (admin only).
+func GetAbuseReports(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	rows, err := database.PostgresDB.QueryContext(r.Context(), `
+		SELECT ar.id, ar.reported_by, ur.username, ar.group_id, gr.name, ar.status, ar.created_at, ar.encrypted_payload
+		FROM abuse_reports ar
+		LEFT JOIN users ur ON ar.reported_by = ur.id
+		LEFT JOIN groups gr ON ar.group_id = gr.id
+		ORDER BY ar.created_at DESC
+	`)
+	if err != nil {
+		http.Error(w, "Failed to fetch abuse reports: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	reportList := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id, reportedBy, groupID, status, encryptedPayload string
+		var reporterName, groupName sql.NullString
+		var createdAt time.Time
+
+		if err := rows.Scan(&id, &reportedBy, &reporterName, &groupID, &groupName, &status, &createdAt, &encryptedPayload); err != nil {
+			http.Error(w, "Failed to scan abuse reports: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		reportList = append(reportList, map[string]interface{}{
+			"id":                id,
+			"reported_by":       reportedBy,
+			"reporter_username": reporterName.String,
+			"group_id":          groupID,
+			"group_name":        groupName.String,
+			"status":            status,
+			"created_at":        createdAt,
+			"encrypted_payload": encryptedPayload,
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"reports": reportList,
+		"count":   len(reportList),
+	})
+}
+
+type AdminBlockMemberRequest struct {
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+}
+
+// AdminBlockGroupMember evicts and blocks a user from a specific group chat.
+func AdminBlockGroupMember(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var req AdminBlockMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	groupUUID, err := uuid.Parse(req.GroupID)
+	if err != nil {
+		http.Error(w, "invalid group ID formatting", http.StatusBadRequest)
+		return
+	}
+
+	userUUID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		http.Error(w, "invalid user ID formatting", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Evict the user from the group membership
+	res, err := database.PostgresDB.ExecContext(r.Context(), `
+		DELETE FROM group_members 
+		WHERE group_id = $1 AND user_id = $2
+	`, groupUUID, userUUID)
+	if err != nil {
+		http.Error(w, "failed to evict group member: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected > 0 {
+		// Decrease member count in group
+		_, _ = database.PostgresDB.ExecContext(r.Context(), `
+			UPDATE groups SET member_count = member_count - 1 
+			WHERE id = $1 AND member_count > 0
+		`, groupUUID)
+	}
+
+	// 2. Insert into group_blocks to prevent them from re-joining
+	_, err = database.PostgresDB.ExecContext(r.Context(), `
+		INSERT INTO group_blocks (group_id, user_id, blocked_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (group_id, user_id) DO NOTHING
+	`, groupUUID, userUUID)
+	if err != nil {
+		http.Error(w, "failed to block member from group chat: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Immutably log administrative block action
+	_, _ = database.PostgresDB.ExecContext(r.Context(), `
+		INSERT INTO security_audit_logs (id, event_type, target_id, actor_id, actor_role, reason, ip_address, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, uuid.New(), "ADMIN_MEMBER_GROUP_BLOCKED", userUUID.String(), "admin", "admin", "User blocked administratively from group chat: "+groupUUID.String(), clientip.RealClientIP(r), time.Now().UTC())
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "User evicted and blocked from group chat successfully",
 	})
 }
 

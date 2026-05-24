@@ -277,6 +277,15 @@ func InitPostgresTables() error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 
+		// Group blocks table
+		`CREATE TABLE IF NOT EXISTS group_blocks (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			blocked_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(group_id, user_id)
+		)`,
+
 		// Security audit logs ledger (Append-only)
 		`CREATE TABLE IF NOT EXISTS security_audit_logs (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

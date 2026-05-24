@@ -90,18 +90,27 @@ type DisclosureService struct {
 var ActiveDisclosureService *DisclosureService
 
 func (s *DisclosureService) ensureKMSInitialized() {
-	if s.KMS == nil {
-		if len(s.PrivateKeyX25519) == 32 {
-			s.KMS = &LocalKMSEscrowClient{PrivateKey: s.PrivateKeyX25519}
-		} else {
-			encKey := os.Getenv("ENCRYPTION_KEY")
-			if encKey != "" {
-				if keyBytes, err := base64.StdEncoding.DecodeString(encKey); err == nil && len(keyBytes) == 32 {
-					s.PrivateKeyX25519 = keyBytes
-					s.KMS = &LocalKMSEscrowClient{PrivateKey: keyBytes}
-				}
+	if s.KMS == nil || len(s.PrivateKeyX25519) != 32 {
+		encKey := os.Getenv("ENCRYPTION_KEY")
+		if encKey != "" {
+			if keyBytes, err := base64.StdEncoding.DecodeString(encKey); err == nil && len(keyBytes) == 32 {
+				s.PrivateKeyX25519 = keyBytes
+				s.KMS = &LocalKMSEscrowClient{PrivateKey: keyBytes}
+				return
 			}
 		}
+		
+		// If PrivateKeyX25519 is already somehow set from direct initialization, wrap it
+		if len(s.PrivateKeyX25519) == 32 {
+			s.KMS = &LocalKMSEscrowClient{PrivateKey: s.PrivateKeyX25519}
+			return
+		}
+
+		// Fallback to generating a temporary random key for local development
+		keyBytes := make([]byte, 32)
+		_, _ = rand.Read(keyBytes)
+		s.PrivateKeyX25519 = keyBytes
+		s.KMS = &LocalKMSEscrowClient{PrivateKey: keyBytes}
 	}
 }
 
@@ -128,6 +137,19 @@ func InitActiveDisclosureService(privateKeyB64 string) error {
 	}
 	return nil
 }
+// GetEscrowPublicKey derives and returns the 32-byte X25519 public key.
+func (s *DisclosureService) GetEscrowPublicKey() ([]byte, error) {
+	s.ensureKMSInitialized()
+	if len(s.PrivateKeyX25519) != 32 {
+		return nil, errors.New("governed disclosure KMS private key is uninitialized or invalid")
+	}
+	pubKey, err := curve25519.X25519(s.PrivateKeyX25519, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive public key: %w", err)
+	}
+	return pubKey, nil
+}
+
 
 // DecryptReportPayload verifies the moderator request, logs the event in PostgreSQL, and decrypts the user-disclosed package.
 func (s *DisclosureService) DecryptReportPayload(ctx context.Context, reportID string, moderatorID string, reason string, ipAddress string) (string, error) {
@@ -199,22 +221,7 @@ func GenerateLocalEscrowKeyPair() (publicKey []byte, privateKey []byte, err erro
 }
 
 func init() {
-	// Automatically initialize the active disclosure service with a fallback key
-	// for development and out-of-the-box operation.
-	encKey := os.Getenv("ENCRYPTION_KEY")
-	var keyBytes []byte
-	if encKey != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(encKey); err == nil && len(decoded) == 32 {
-			keyBytes = decoded
-		}
-	}
-	if len(keyBytes) != 32 {
-		keyBytes = make([]byte, 32)
-		_, _ = rand.Read(keyBytes)
-	}
-
-	ActiveDisclosureService = &DisclosureService{
-		PrivateKeyX25519: keyBytes,
-		KMS:              &LocalKMSEscrowClient{PrivateKey: keyBytes},
-	}
+	// Initialize with empty parameters to allow correct lazy loading of ENCRYPTION_KEY
+	// from environment variables after main() has loaded the .env file.
+	ActiveDisclosureService = &DisclosureService{}
 }

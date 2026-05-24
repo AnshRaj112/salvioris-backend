@@ -641,6 +641,25 @@ func JoinGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if user is blocked from this group
+	var isBlocked bool
+	err = database.PostgresDB.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM group_blocks 
+			WHERE group_id = $1 AND user_id = $2
+			LIMIT 1
+		)
+	`, groupID, *userID).Scan(&isBlocked)
+	if err == nil && isBlocked {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(JoinGroupResponse{
+			Success: false,
+			Message: "You are blocked from joining this group chat",
+		})
+		return
+	}
+
 	// Check if user is already a member
 	var existingMemberID uuid.UUID
 	err = database.PostgresDB.QueryRow(`
