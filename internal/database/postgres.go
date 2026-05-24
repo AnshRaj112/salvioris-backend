@@ -300,6 +300,83 @@ func InitPostgresTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_security_audit_actor ON security_audit_logs(actor_id)`,
 
+		// 1. Referral Codes Table
+		`CREATE TABLE IF NOT EXISTS referral_codes (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			code VARCHAR(50) NOT NULL UNIQUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP,
+			usage_limit INTEGER,
+			usage_count INTEGER NOT NULL DEFAULT 0,
+			is_revoked BOOLEAN NOT NULL DEFAULT FALSE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_referral_codes_code ON referral_codes(code)`,
+		`CREATE INDEX IF NOT EXISTS idx_referral_codes_therapist ON referral_codes(therapist_id)`,
+
+		// 2. Referral Usages Table
+		`CREATE TABLE IF NOT EXISTS referral_usages (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			referral_code_id UUID NOT NULL REFERENCES referral_codes(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			used_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(referral_code_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_referral_usages_user ON referral_usages(user_id)`,
+
+		// 3. Therapist-User Connections Table
+		`CREATE TABLE IF NOT EXISTS therapist_user_connections (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			connected_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			connection_type VARCHAR(50) NOT NULL,
+			referral_code_id UUID REFERENCES referral_codes(id) ON DELETE SET NULL,
+			UNIQUE(therapist_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_therapist ON therapist_user_connections(therapist_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_user ON therapist_user_connections(user_id)`,
+
+		// 4. Connection Requests Table
+		`CREATE TABLE IF NOT EXISTS connection_requests (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			note TEXT,
+			UNIQUE(user_id, therapist_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_conn_requests_therapist_status ON connection_requests(therapist_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_conn_requests_user ON connection_requests(user_id)`,
+
+		// 5. Consent History Table
+		`CREATE TABLE IF NOT EXISTS consent_history (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			action VARCHAR(50) NOT NULL,
+			timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+			details TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_consent_history_user ON consent_history(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_consent_history_therapist ON consent_history(therapist_id)`,
+
+		// 6. Notifications Table
+		`CREATE TABLE IF NOT EXISTS notifications (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			recipient_id UUID NOT NULL,
+			recipient_role VARCHAR(20) NOT NULL,
+			title VARCHAR(255) NOT NULL,
+			message TEXT NOT NULL,
+			type VARCHAR(50) NOT NULL,
+			is_read BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			data JSONB
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, is_read)`,
+
 		// Function and trigger to enforce append-only nature
 		`CREATE OR REPLACE FUNCTION block_modifications()
 		RETURNS TRIGGER AS $$

@@ -21,9 +21,10 @@ import (
 
 // Privacy-First Signup Request
 type PrivacySignupRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
 	RecoveryEmail string `json:"recovery_email,omitempty"` // Optional but recommended
+	ReferralCode  string `json:"referral_code,omitempty"`  // Added for referral system
 }
 
 // Privacy-First Signin Request
@@ -191,6 +192,115 @@ func PrivacySignup(w http.ResponseWriter, r *http.Request) {
 				// Log but don't fail - recovery is optional
 				log.Printf("WARNING: Failed to save recovery data for user %s: %v", normalizedUsername, err)
 			}
+		}
+	}
+
+	// Link referral code if provided
+	if req.ReferralCode != "" {
+		var referralID uuid.UUID
+		var therapistID uuid.UUID
+		var isRevoked bool
+		var usageLimit sql.NullInt64
+		var usageCount int
+		var expiresAt *time.Time
+
+		err = tx.QueryRow(`
+			SELECT id, therapist_id, is_revoked, usage_limit, usage_count, expires_at
+			FROM referral_codes WHERE code = $1
+		`, req.ReferralCode).Scan(&referralID, &therapistID, &isRevoked, &usageLimit, &usageCount, &expiresAt)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(PrivacyAuthResponse{
+					Success: false,
+					Message: "Invalid or non-existent referral code",
+				})
+				return
+			}
+			http.Error(w, "Database error during referral validation", http.StatusInternalServerError)
+			return
+		}
+
+		if isRevoked {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(PrivacyAuthResponse{
+				Success: false,
+				Message: "Referral code has been revoked by the therapist",
+			})
+			return
+		}
+
+		if expiresAt != nil && expiresAt.Before(time.Now()) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(PrivacyAuthResponse{
+				Success: false,
+				Message: "Referral code has expired",
+			})
+			return
+		}
+
+		if usageLimit.Valid && int64(usageCount) >= usageLimit.Int64 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(PrivacyAuthResponse{
+				Success: false,
+				Message: "Referral code has reached its usage limit",
+			})
+			return
+		}
+
+		// Insert referral usage link
+		_, err = tx.Exec(`
+			INSERT INTO referral_usages (id, referral_code_id, user_id, used_at)
+			VALUES (gen_random_uuid(), $1, $2, NOW())
+		`, referralID, userID)
+		if err != nil {
+			http.Error(w, "Failed to record referral usage link", http.StatusInternalServerError)
+			return
+		}
+
+		// Increment usage counter on the referral code
+		_, err = tx.Exec(`
+			UPDATE referral_codes SET usage_count = usage_count + 1 WHERE id = $1
+		`, referralID)
+		if err != nil {
+			http.Error(w, "Failed to update referral usage counters", http.StatusInternalServerError)
+			return
+		}
+
+		// Establish the direct patient-therapist connection (relation)
+		_, err = tx.Exec(`
+			INSERT INTO therapist_user_connections (id, therapist_id, user_id, connected_at, connection_type, referral_code_id)
+			VALUES (gen_random_uuid(), $1, $2, NOW(), 'referral', $3)
+		`, therapistID, userID, referralID)
+		if err != nil {
+			http.Error(w, "Failed to establish therapist relationship connection", http.StatusInternalServerError)
+			return
+		}
+
+		// Log secure HIPAA-compliant patient consent row
+		_, err = tx.Exec(`
+			INSERT INTO consent_history (id, user_id, therapist_id, action, timestamp, details)
+			VALUES (gen_random_uuid(), $1, $2, 'granted_referral', NOW(), $3)
+		`, userID, therapistID, fmt.Sprintf("Patient automatically linked and granted viewing consent during signup via referral code %s", req.ReferralCode))
+		if err != nil {
+			log.Printf("WARNING: Failed to log consent history during referral signup: %v", err)
+		}
+
+		// Dispatch secure audit log
+		database.TriggerAuditEvent("REFERRAL_CODE_USED", referralID.String(), userID.String(), "user", fmt.Sprintf("Referral code %s used during registration to link user with therapist %s", req.ReferralCode, therapistID.String()), r)
+
+		// Create real-time notification for the therapist
+		_, err = tx.Exec(`
+			INSERT INTO notifications (id, recipient_id, recipient_role, title, message, type, is_read, created_at, data)
+			VALUES (gen_random_uuid(), $1, 'therapist', $2, $3, 'connection_request', FALSE, NOW(), $4)
+		`, therapistID, "New Referral Connection", fmt.Sprintf("A new client (username: %s) has successfully registered and linked via your referral code.", normalizedUsername), fmt.Sprintf(`{"user_id": "%s", "username": "%s", "connection_type": "referral"}`, userID.String(), normalizedUsername))
+		if err != nil {
+			log.Printf("WARNING: Failed to write therapist notification event: %v", err)
 		}
 	}
 

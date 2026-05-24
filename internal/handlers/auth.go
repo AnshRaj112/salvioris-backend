@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
@@ -451,11 +452,20 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 		"is_approved":          isApproved,
 	}
 
+	// Create Redis session for the approved therapist
+	sessionToken, err := services.CreateSession(therapistID)
+	if err != nil {
+		log.Printf("ERROR: Failed to create session for therapist %s: %v", email.String, err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{
 		Success: true,
 		Message: "Login successful",
 		User:    therapistMap,
+		Token:   sessionToken, // Expose token to therapist
 	})
 }
 

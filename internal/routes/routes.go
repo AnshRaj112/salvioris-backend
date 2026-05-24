@@ -24,6 +24,31 @@ func SetupRoutes(r *chi.Mux) {
 	// Therapist status routes
 	r.Get("/api/therapist/status", handlers.CheckTherapistStatus)
 	r.Get("/api/therapist", handlers.GetTherapistByID)
+	r.Get("/api/therapist/me", handlers.GetTherapistMe)
+	r.Put("/api/therapist/profile", handlers.UpdateTherapistProfile)
+
+	// Therapist referral code system (Flow 1)
+	r.Post("/api/therapist/referrals", handlers.GenerateReferralCode)
+	r.Get("/api/therapist/referrals", handlers.ListReferralCodes)
+	r.Put("/api/therapist/referrals/{id}/revoke", handlers.RevokeReferralCode)
+	r.Get("/api/therapist/referrals/analytics", handlers.GetReferralAnalytics)
+
+	// Therapist connection & dashboard system (Flow 3 / Relationship management)
+	r.Get("/api/therapist/connections", handlers.GetConnectedUsers)
+	r.Get("/api/therapist/connection-requests", handlers.GetPendingRequests)
+	r.Put("/api/therapist/connection-requests/{id}/respond", handlers.RespondToRequest)
+	r.Delete("/api/therapist/connections/{userId}", handlers.DisconnectUser)
+
+	// User-driven therapist search, profile viewing, and connection request (Flow 2 / Flow 3)
+	r.Get("/api/auth/validate-referral", handlers.ValidateReferralCode)
+	r.Get("/api/therapists", handlers.SearchTherapists)
+	r.Get("/api/therapists/{id}", handlers.GetTherapistProfile)
+	r.Post("/api/therapists/{id}/connect", handlers.RequestConnection)
+	r.Delete("/api/therapists/{id}/disconnect", handlers.UserDisconnectTherapist)
+
+	// Notification services
+	r.Get("/api/notifications", handlers.GetNotifications)
+	r.Put("/api/notifications/{id}/read", handlers.MarkNotificationRead)
 	
 	// File upload routes
 	r.Post("/api/upload", handlers.UploadFile)
