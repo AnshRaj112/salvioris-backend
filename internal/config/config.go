@@ -17,6 +17,8 @@ type Config struct {
 	CloudinaryName      string
 	CloudinaryAPIKey    string
 	CloudinaryAPISecret string
+	LoopsAPIKey         string
+	LoopsTransactionalID string
 	Host        string // Raw HOST env (e.g. https://backend.salvioris.com) for URLs if needed
 	Environment string // ENV: production, development, etc.
 }
@@ -77,6 +79,8 @@ func Load() *Config {
 		CloudinaryName:      getEnv("CLOUDINARY_CLOUD_NAME", ""),
 		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
 		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
+		LoopsAPIKey:         getEnv("LOOPS_API_KEY", ""),
+		LoopsTransactionalID: getEnv("LOOPS_TRANSACTIONAL_ID", ""),
 	}
 }
 

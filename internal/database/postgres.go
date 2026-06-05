@@ -377,6 +377,21 @@ func InitPostgresTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, is_read)`,
 
+		// Therapist-initiated patient onboarding records
+		`CREATE TABLE IF NOT EXISTS patient_onboardings (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			patient_name VARCHAR(255) NOT NULL,
+			patient_email VARCHAR(255) NOT NULL,
+			username VARCHAR(20) NOT NULL,
+			referral_code_id UUID NOT NULL REFERENCES referral_codes(id) ON DELETE CASCADE,
+			onboarded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(therapist_id, patient_email)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_patient_onboardings_therapist ON patient_onboardings(therapist_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_patient_onboardings_user ON patient_onboardings(user_id)`,
+
 		// Function and trigger to enforce append-only nature
 		`CREATE OR REPLACE FUNCTION block_modifications()
 		RETURNS TRIGGER AS $$

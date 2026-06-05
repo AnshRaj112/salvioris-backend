@@ -39,6 +39,10 @@ func SetupRoutes(r *chi.Mux) {
 	r.Put("/api/therapist/connection-requests/{id}/respond", handlers.RespondToRequest)
 	r.Delete("/api/therapist/connections/{userId}", handlers.DisconnectUser)
 
+	// Therapist patient onboarding
+	r.Post("/api/therapist/onboard-patient", handlers.OnboardPatient)
+	r.Get("/api/therapist/onboarded-patients", handlers.ListOnboardedPatients)
+
 	// User-driven therapist search, profile viewing, and connection request (Flow 2 / Flow 3)
 	r.Get("/api/auth/validate-referral", handlers.ValidateReferralCode)
 	r.Get("/api/therapists", handlers.SearchTherapists)
