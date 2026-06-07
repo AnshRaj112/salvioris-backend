@@ -94,6 +94,10 @@ func GlobalRateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if IsTherapistRoute(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ip := clientip.RealClientIP(r)
 		if !getGlobalLimiter(ip).Allow() {
 			w.Header().Set("Content-Type", "application/json")
@@ -121,10 +125,9 @@ const (
 )
 
 var loginPaths = map[string]bool{
-	"/api/auth/signin":           true,
-	"/api/auth/user/signin":      true,
-	"/api/auth/therapist/signin": true,
-	"/api/admin/signin":          true,
+	"/api/auth/signin":      true,
+	"/api/auth/user/signin": true,
+	"/api/admin/signin":     true,
 }
 
 func getLoginLimiter(ip string) *rate.Limiter {

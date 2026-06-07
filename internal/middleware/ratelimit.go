@@ -36,9 +36,15 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 		}
 		
 		// Skip rate limiting for community routes
-		if strings.HasPrefix(r.URL.Path, "/api/groups") || 
-		   strings.HasPrefix(r.URL.Path, "/ws/chat") || 
-		   strings.HasPrefix(r.URL.Path, "/api/chat") {
+		if strings.HasPrefix(r.URL.Path, "/api/groups") ||
+			strings.HasPrefix(r.URL.Path, "/ws/chat") ||
+			strings.HasPrefix(r.URL.Path, "/api/chat") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Skip rate limiting for therapist dashboard and auth routes
+		if IsTherapistRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

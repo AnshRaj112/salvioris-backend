@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
@@ -20,78 +22,106 @@ import (
 	"github.com/google/uuid"
 )
 
-// requireTherapistAuth validates session token and confirms that the ID represents an approved therapist
-func requireTherapistAuth(r *http.Request) (uuid.UUID, bool) {
-	if os.Getenv("ENV") != "production" {
-		// In development: try to validate token first if present
-		token := extractBearerToken(r.Header.Get("Authorization"))
-		if token != "" {
-			userID, ok, err := services.ValidateSession(token)
-			if err == nil && ok {
-				// Verify if therapist exists in DB
-				var exists bool
-				err = database.PostgresDB.QueryRow(`
-					SELECT EXISTS(SELECT 1 FROM therapists WHERE id = $1)
-				`, userID).Scan(&exists)
-				if err == nil && exists {
-					// Automatically make sure they are approved in development
-					_, _ = database.PostgresDB.Exec("UPDATE therapists SET is_approved = TRUE WHERE id = $1", userID)
-					return userID, true
-				}
-			}
-		}
+var (
+	devTherapistMu     sync.Mutex
+	devTherapistID     uuid.UUID
+	devTherapistLoaded bool
+)
 
-		// Fallback in development: grab the first therapist in the database
-		var firstID uuid.UUID
-		err := database.PostgresDB.QueryRow("SELECT id FROM therapists LIMIT 1").Scan(&firstID)
-		if err == nil {
-			// Automatically make sure they are approved in development
-			_, _ = database.PostgresDB.Exec("UPDATE therapists SET is_approved = TRUE WHERE id = $1", firstID)
-			return firstID, true
-		}
+const therapistResponseCacheTTL = 30 * time.Second
 
-		// If no therapist exists in development, create a default mock therapist
-		mockID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-		var exists bool
-		err = database.PostgresDB.QueryRow("SELECT EXISTS(SELECT 1 FROM therapists WHERE id = $1)", mockID).Scan(&exists)
-		if err == nil && !exists {
-			_, err = database.PostgresDB.Exec(`
-				INSERT INTO therapists (
-					id, name, email, password, license_number, license_state,
-					years_of_experience, specialization, phone, college_degree, masters_institution,
-					psychologist_type, successful_cases, dsm_awareness, therapy_types,
-					certificate_image_path, degree_image_path, is_approved
-				) VALUES ($1, 'Mock Therapist', 'mock@therapist.com', '$2a$10$7s/L4wz.f.xS5i/8oF.fW.gKzZox7n8GvT63e8i3C9WJ1Z1z1z1z1', 'LIC123', 'CA',
-					5, 'CBT', '+15555555555', 'PhD', 'Mock University',
-					'Clinical Psychologist', 100, 'expert', 'CBT, DBT',
-					'http://example.com/cert.png', 'http://example.com/deg.png', TRUE)
-			`, mockID)
-			if err != nil {
-				log.Printf("ERROR: Failed to create mock therapist: %v", err)
-			}
-		}
-		return mockID, true
+func therapistCacheKey(therapistID uuid.UUID, resource string) string {
+	return fmt.Sprintf("tcache:%s:%s", therapistID.String(), resource)
+}
+
+func readTherapistCache(therapistID uuid.UUID, resource string) ([]byte, bool) {
+	if database.RedisClient == nil {
+		return nil, false
 	}
+	data, err := database.RedisClient.Get(context.Background(), therapistCacheKey(therapistID, resource)).Result()
+	if err != nil {
+		return nil, false
+	}
+	return []byte(data), true
+}
 
-	// Production Behavior
-	token := extractBearerToken(r.Header.Get("Authorization"))
+func writeTherapistCache(therapistID uuid.UUID, resource string, data []byte) {
+	if database.RedisClient != nil {
+		_ = database.RedisClient.Set(context.Background(), therapistCacheKey(therapistID, resource), data, therapistResponseCacheTTL).Err()
+	}
+}
+
+func invalidateTherapistCaches(therapistID uuid.UUID, resources ...string) {
+	if database.RedisClient == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, resource := range resources {
+		_ = database.RedisClient.Del(ctx, therapistCacheKey(therapistID, resource)).Err()
+	}
+}
+
+func getDevTherapistID() uuid.UUID {
+	devTherapistMu.Lock()
+	defer devTherapistMu.Unlock()
+	if devTherapistLoaded {
+		return devTherapistID
+	}
+	devTherapistLoaded = true
+	if err := database.PostgresDB.QueryRow("SELECT id FROM therapists LIMIT 1").Scan(&devTherapistID); err == nil {
+		return devTherapistID
+	}
+	devTherapistID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	var exists bool
+	_ = database.PostgresDB.QueryRow("SELECT EXISTS(SELECT 1 FROM therapists WHERE id = $1)", devTherapistID).Scan(&exists)
+	if !exists {
+		_, _ = database.PostgresDB.Exec(`
+			INSERT INTO therapists (
+				id, name, email, password, license_number, license_state,
+				years_of_experience, specialization, phone, college_degree, masters_institution,
+				psychologist_type, successful_cases, dsm_awareness, therapy_types,
+				certificate_image_path, degree_image_path, is_approved
+			) VALUES ($1, 'Mock Therapist', 'mock@therapist.com', '$2a$10$mock', 'LIC123', 'CA',
+				5, 'CBT', '+15555555555', 'PhD', 'Mock University',
+				'Clinical Psychologist', 100, 'expert', 'CBT, DBT',
+				'http://example.com/cert.png', 'http://example.com/deg.png', TRUE)
+		`, devTherapistID)
+	}
+	return devTherapistID
+}
+
+func resolveTherapistFromToken(token string) (uuid.UUID, bool) {
 	if token == "" {
 		return uuid.Nil, false
+	}
+	if id, ok := services.GetTherapistAuthCache(token); ok {
+		return id, true
 	}
 	userID, ok, err := services.ValidateSession(token)
 	if err != nil || !ok {
 		return uuid.Nil, false
 	}
-
 	var isApproved bool
-	err = database.PostgresDB.QueryRow(`
-		SELECT is_approved FROM therapists WHERE id = $1
-	`, userID).Scan(&isApproved)
+	err = database.PostgresDB.QueryRow(
+		`SELECT is_approved FROM therapists WHERE id = $1`, userID,
+	).Scan(&isApproved)
 	if err != nil || !isApproved {
 		return uuid.Nil, false
 	}
-
+	services.SetTherapistAuthCache(token, userID)
 	return userID, true
+}
+
+// requireTherapistAuth validates session token and confirms that the ID represents an approved therapist
+func requireTherapistAuth(r *http.Request) (uuid.UUID, bool) {
+	token := extractBearerToken(r.Header.Get("Authorization"))
+	if id, ok := resolveTherapistFromToken(token); ok {
+		return id, true
+	}
+	if os.Getenv("ENV") != "production" {
+		return getDevTherapistID(), true
+	}
+	return uuid.Nil, false
 }
 
 // requireUserAuth validates session token and confirms that the ID represents an active user
@@ -173,7 +203,7 @@ func GenerateReferralCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log secure audit event
+	invalidateReferralCodesCache(therapistID)
 	database.TriggerAuditEvent("REFERRAL_CODE_CREATED", newID.String(), therapistID.String(), "therapist", fmt.Sprintf("Therapist generated secure referral code: %s", code), r)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -186,11 +216,21 @@ func GenerateReferralCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func invalidateReferralCodesCache(therapistID uuid.UUID) {
+	invalidateTherapistCaches(therapistID, "referrals", "analytics")
+}
+
 // ListReferralCodes lists active/inactive referral codes for the therapist
 func ListReferralCodes(w http.ResponseWriter, r *http.Request) {
 	therapistID, ok := requireTherapistAuth(r)
 	if !ok {
 		http.Error(w, "Unauthorized therapist access", http.StatusUnauthorized)
+		return
+	}
+
+	if cached, ok := readTherapistCache(therapistID, "referrals"); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cached)
 		return
 	}
 
@@ -207,10 +247,8 @@ func ListReferralCodes(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	rowCount := 0
 	codes := []models.ReferralCode{}
 	for rows.Next() {
-		rowCount++
 		var c models.ReferralCode
 		var expires sql.NullTime
 		var limit sql.NullInt64
@@ -233,18 +271,14 @@ func ListReferralCodes(w http.ResponseWriter, r *http.Request) {
 		codes = append(codes, c)
 	}
 
-	// Log total rows fetched
-	log.Printf("ListReferralCodes fetched %d rows for therapist %s", rowCount, therapistID.String())
-	// Check for errors after iteration
 	if err = rows.Err(); err != nil {
 		log.Printf("ERROR after iterating referral codes rows: %v", err)
 	}
 
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "codes": codes})
+	writeTherapistCache(therapistID, "referrals", resp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"codes":   codes,
-	})
+	w.Write(resp)
 }
 
 // RevokeReferralCode revokes a referral code
@@ -283,7 +317,7 @@ func RevokeReferralCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger audit log
+	invalidateReferralCodesCache(therapistID)
 	database.TriggerAuditEvent("REFERRAL_CODE_REVOKED", codeID.String(), therapistID.String(), "therapist", fmt.Sprintf("Therapist revoked referral code: %s", codeStr), r)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -301,31 +335,29 @@ func GetReferralAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cached, ok := readTherapistCache(therapistID, "analytics"); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cached)
+		return
+	}
+
 	var stats models.ReferralAnalytics
 	err := database.PostgresDB.QueryRow(`
-		SELECT COUNT(id), COALESCE(SUM(usage_count), 0)
+		SELECT COUNT(id),
+			COALESCE(SUM(usage_count), 0),
+			COUNT(id) FILTER (WHERE is_revoked = FALSE AND (expires_at IS NULL OR expires_at > NOW()))
 		FROM referral_codes
 		WHERE therapist_id = $1
-	`, therapistID).Scan(&stats.TotalCodes, &stats.TotalSignups)
+	`, therapistID).Scan(&stats.TotalCodes, &stats.TotalSignups, &stats.ActiveCodes)
 	if err != nil {
 		http.Error(w, "Failed to fetch analytics aggregates", http.StatusInternalServerError)
 		return
 	}
 
-	err = database.PostgresDB.QueryRow(`
-		SELECT COUNT(id) FROM referral_codes
-		WHERE therapist_id = $1 AND is_revoked = FALSE AND (expires_at IS NULL OR expires_at > NOW())
-	`, therapistID).Scan(&stats.ActiveCodes)
-	if err != nil {
-		http.Error(w, "Failed to fetch active code metrics", http.StatusInternalServerError)
-		return
-	}
-
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "analytics": stats})
+	writeTherapistCache(therapistID, "analytics", resp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"analytics": stats,
-	})
+	w.Write(resp)
 }
 
 // GetConnectedUsers lists patient clients currently connected to the therapist
@@ -337,6 +369,13 @@ func GetConnectedUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	search := r.URL.Query().Get("q")
+	if search == "" {
+		if cached, ok := readTherapistCache(therapistID, "connections"); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cached)
+			return
+		}
+	}
 	var rows *sql.Rows
 	var err error
 
@@ -377,11 +416,12 @@ func GetConnectedUsers(w http.ResponseWriter, r *http.Request) {
 		users = append(users, cu)
 	}
 
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "connections": users})
+	if search == "" {
+		writeTherapistCache(therapistID, "connections", resp)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"connections": users,
-	})
+	w.Write(resp)
 }
 
 // GetPendingRequests lists incoming user direct connection requests
@@ -389,6 +429,12 @@ func GetPendingRequests(w http.ResponseWriter, r *http.Request) {
 	therapistID, ok := requireTherapistAuth(r)
 	if !ok {
 		http.Error(w, "Unauthorized therapist access", http.StatusUnauthorized)
+		return
+	}
+
+	if cached, ok := readTherapistCache(therapistID, "requests"); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cached)
 		return
 	}
 
@@ -422,11 +468,10 @@ func GetPendingRequests(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, req)
 	}
 
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "requests": requests})
+	writeTherapistCache(therapistID, "requests", resp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"requests": requests,
-	})
+	w.Write(resp)
 }
 
 // RespondToRequest approves or rejects an incoming connection request
@@ -543,6 +588,8 @@ func RespondToRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	invalidateTherapistCaches(therapistID, "requests", "connections")
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -629,6 +676,8 @@ func DisconnectUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	invalidateTherapistCaches(therapistID, "connections")
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -641,6 +690,12 @@ func GetTherapistMe(w http.ResponseWriter, r *http.Request) {
 	therapistID, ok := requireTherapistAuth(r)
 	if !ok {
 		http.Error(w, "Unauthorized therapist access", http.StatusUnauthorized)
+		return
+	}
+
+	if cached, ok := readTherapistCache(therapistID, "me"); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cached)
 		return
 	}
 
@@ -687,11 +742,10 @@ func GetTherapistMe(w http.ResponseWriter, r *http.Request) {
 		"is_approved":          isApproved,
 	}
 
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "user": therapistMap})
+	writeTherapistCache(therapistID, "me", resp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"user":    therapistMap,
-	})
+	w.Write(resp)
 }
 
 // UpdateTherapistProfile allows modifying professional metrics
@@ -729,9 +783,9 @@ func UpdateTherapistProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Invalidate Cache for this therapist
 	cacheKey := services.CacheKey("therapist", therapistID.String())
 	services.Cache.Delete(cacheKey)
+	invalidateTherapistCaches(therapistID, "me")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

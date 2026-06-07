@@ -14,6 +14,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/models"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/utils"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -60,13 +61,28 @@ func OnboardPatient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var existingOnboardingID uuid.UUID
+	var existingID uuid.UUID
+	var currentHash, initialHash sql.NullString
+	var hasLoggedIn bool
 	err = database.PostgresDB.QueryRow(`
-		SELECT id FROM patient_onboardings
-		WHERE therapist_id = $1 AND LOWER(patient_email) = $2
-	`, therapistID, req.PatientEmail).Scan(&existingOnboardingID)
+		SELECT po.id, u.password_hash, po.initial_password_hash,
+			EXISTS(SELECT 1 FROM user_devices ud WHERE ud.user_id = po.user_id)
+		FROM patient_onboardings po
+		JOIN users u ON u.id = po.user_id
+		WHERE po.therapist_id = $1 AND LOWER(po.patient_email) = $2
+	`, therapistID, req.PatientEmail).Scan(&existingID, &currentHash, &initialHash, &hasLoggedIn)
 	if err == nil {
-		http.Error(w, "This patient email has already been onboarded", http.StatusConflict)
+		activated := hasLoggedIn
+		if initialHash.Valid && currentHash.Valid && currentHash.String != initialHash.String {
+			activated = true
+		}
+		msg := "Onboarding already sent for this email. Awaiting patient login."
+		if activated {
+			msg = "This patient has already logged in or changed their password. Cannot onboard again."
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": msg})
 		return
 	}
 	if err != sql.ErrNoRows {
@@ -169,11 +185,11 @@ func OnboardPatient(w http.ResponseWriter, r *http.Request) {
 	var onboardingID uuid.UUID
 	err = tx.QueryRow(`
 		INSERT INTO patient_onboardings (
-			therapist_id, user_id, patient_name, patient_email, username, referral_code_id, onboarded_at
+			therapist_id, user_id, patient_name, patient_email, username, referral_code_id, initial_password_hash, onboarded_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		RETURNING id
-	`, therapistID, userID, req.PatientName, req.PatientEmail, username, referralID).Scan(&onboardingID)
+	`, therapistID, userID, req.PatientName, req.PatientEmail, username, referralID, hashedPassword).Scan(&onboardingID)
 	if err != nil {
 		http.Error(w, "Failed to record onboarding", http.StatusInternalServerError)
 		return
@@ -184,18 +200,17 @@ func OnboardPatient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := services.SendOnboardingEmail(services.OnboardingEmailData{
-		Email:             req.PatientEmail,
-		PatientEmail:      req.PatientEmail,
-		PatientName:       req.PatientName,
-		TherapistName:     therapistName,
-		Username:          username,
-		TemporaryPassword: temporaryPassword,
-	}); err != nil {
-		log.Printf("ERROR sending onboarding email to %s: %v", req.PatientEmail, err)
-		http.Error(w, "Patient account created but failed to send onboarding email", http.StatusInternalServerError)
-		return
+	invalidateTherapistCaches(therapistID, "onboarded", "connections", "referrals", "analytics")
+
+	emailData := services.OnboardingEmailData{
+		Email: req.PatientEmail, PatientEmail: req.PatientEmail, PatientName: req.PatientName,
+		TherapistName: therapistName, Username: username, TemporaryPassword: temporaryPassword,
 	}
+	go func() {
+		if err := services.SendOnboardingEmail(emailData); err != nil {
+			log.Printf("ERROR sending onboarding email to %s: %v", req.PatientEmail, err)
+		}
+	}()
 
 	database.TriggerAuditEvent(
 		"PATIENT_ONBOARDED",
@@ -231,10 +246,19 @@ func ListOnboardedPatients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cached, ok := readTherapistCache(therapistID, "onboarded"); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cached)
+		return
+	}
+
 	rows, err := database.PostgresDB.Query(`
-		SELECT po.id, po.user_id, po.patient_name, po.patient_email, po.username, rc.code, po.onboarded_at
+		SELECT po.id, po.user_id, po.patient_name, po.patient_email, po.username, rc.code, po.onboarded_at,
+			(EXISTS(SELECT 1 FROM user_devices ud WHERE ud.user_id = po.user_id)
+			 OR (po.initial_password_hash IS NOT NULL AND u.password_hash IS DISTINCT FROM po.initial_password_hash)) AS activated
 		FROM patient_onboardings po
 		JOIN referral_codes rc ON rc.id = po.referral_code_id
+		JOIN users u ON u.id = po.user_id
 		WHERE po.therapist_id = $1
 		ORDER BY po.onboarded_at DESC
 	`, therapistID)
@@ -244,28 +268,101 @@ func ListOnboardedPatients(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	patients := []models.PatientOnboarding{}
+	type onboardedPatient struct {
+		models.PatientOnboarding
+		Status string `json:"status"`
+	}
+	patients := []onboardedPatient{}
 	for rows.Next() {
-		var patient models.PatientOnboarding
+		var patient onboardedPatient
+		var activated bool
 		if err := rows.Scan(
-			&patient.ID,
-			&patient.UserID,
-			&patient.PatientName,
-			&patient.PatientEmail,
-			&patient.Username,
-			&patient.ReferralCode,
-			&patient.OnboardedAt,
+			&patient.ID, &patient.UserID, &patient.PatientName, &patient.PatientEmail,
+			&patient.Username, &patient.ReferralCode, &patient.OnboardedAt, &activated,
 		); err != nil {
 			log.Printf("ERROR scanning onboarded patient: %v", err)
 			continue
 		}
 		patient.TherapistID = therapistID
+		patient.Status = "pending"
+		if activated {
+			patient.Status = "activated"
+		}
 		patients = append(patients, patient)
 	}
 
+	resp, _ := json.Marshal(map[string]interface{}{"success": true, "patients": patients})
+	writeTherapistCache(therapistID, "onboarded", resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(resp)
+}
+
+// RemoveOnboardedPatient removes a patient from the therapist onboarding list.
+func RemoveOnboardedPatient(w http.ResponseWriter, r *http.Request) {
+	therapistID, ok := requireTherapistAuth(r)
+	if !ok {
+		http.Error(w, "Unauthorized therapist access", http.StatusUnauthorized)
+		return
+	}
+
+	onboardingID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "Invalid onboarding ID", http.StatusBadRequest)
+		return
+	}
+
+	var userID uuid.UUID
+	var activated bool
+	err = database.PostgresDB.QueryRow(`
+		SELECT po.user_id,
+			(EXISTS(SELECT 1 FROM user_devices ud WHERE ud.user_id = po.user_id)
+			 OR (po.initial_password_hash IS NOT NULL AND u.password_hash IS DISTINCT FROM po.initial_password_hash))
+		FROM patient_onboardings po
+		JOIN users u ON u.id = po.user_id
+		WHERE po.id = $1 AND po.therapist_id = $2
+	`, onboardingID, therapistID).Scan(&userID, &activated)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Onboarded patient not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	tx, err := database.PostgresDB.Begin()
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`DELETE FROM patient_onboardings WHERE id = $1`, onboardingID)
+	if err != nil {
+		http.Error(w, "Failed to remove onboarded patient", http.StatusInternalServerError)
+		return
+	}
+
+	if !activated {
+		_, _ = tx.Exec(`DELETE FROM therapist_user_connections WHERE therapist_id = $1 AND user_id = $2`, therapistID, userID)
+		_, _ = tx.Exec(`DELETE FROM connection_requests WHERE therapist_id = $1 AND user_id = $2`, therapistID, userID)
+		_, err = tx.Exec(`UPDATE users SET is_active = FALSE WHERE id = $1`, userID)
+		if err != nil {
+			http.Error(w, "Failed to deactivate patient account", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	invalidateTherapistCaches(therapistID, "onboarded", "connections")
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"patients": patients,
+		"success": true,
+		"message": "Patient removed from onboarding list",
 	})
 }

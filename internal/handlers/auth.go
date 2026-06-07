@@ -465,6 +465,7 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
+	services.SetTherapistAuthCache(sessionToken, therapistID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{

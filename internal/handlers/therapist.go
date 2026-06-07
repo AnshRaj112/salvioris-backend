@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
@@ -14,10 +16,19 @@ import (
 
 // CheckTherapistStatus checks if a therapist is approved
 func CheckTherapistStatus(w http.ResponseWriter, r *http.Request) {
-	email := r.URL.Query().Get("email")
+	email := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("email")))
 	if email == "" {
 		http.Error(w, "Email is required", http.StatusBadRequest)
 		return
+	}
+
+	statusCacheKey := "therapist_status:" + email
+	if database.RedisClient != nil {
+		if cached, err := database.RedisClient.Get(context.Background(), statusCacheKey).Result(); err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(cached))
+			return
+		}
 	}
 
 	var name sql.NullString
@@ -51,8 +62,12 @@ func CheckTherapistStatus(w http.ResponseWriter, r *http.Request) {
 		response["message"] = "Your application is still pending approval."
 	}
 
+	resp, _ := json.Marshal(response)
+	if database.RedisClient != nil {
+		_ = database.RedisClient.Set(context.Background(), statusCacheKey, resp, 5*time.Minute).Err()
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.Write(resp)
 }
 
 // GetTherapistByID gets therapist by ID (for admin use)
