@@ -391,6 +391,7 @@ func InitPostgresTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_patient_onboardings_therapist ON patient_onboardings(therapist_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_patient_onboardings_user ON patient_onboardings(user_id)`,
+		`ALTER TABLE patient_onboardings ADD COLUMN IF NOT EXISTS initial_password_hash VARCHAR(255)`,
 
 		// Function and trigger to enforce append-only nature
 		`CREATE OR REPLACE FUNCTION block_modifications()
