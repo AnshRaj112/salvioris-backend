@@ -94,6 +94,11 @@ func resolveTherapistFromToken(token string) (uuid.UUID, bool) {
 	if token == "" {
 		return uuid.Nil, false
 	}
+	if claims, ok := services.ValidateAccessToken(token); ok {
+		if id, err := uuid.Parse(claims.UserID); err == nil {
+			return id, true
+		}
+	}
 	if id, ok := services.GetTherapistAuthCache(token); ok {
 		return id, true
 	}
@@ -324,6 +329,74 @@ func RevokeReferralCode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Referral code revoked successfully",
+	})
+}
+
+// DeleteReferralCode deletes a referral code only if it has been revoked.
+func DeleteReferralCode(w http.ResponseWriter, r *http.Request) {
+	therapistID, ok := requireTherapistAuth(r)
+	if !ok {
+		http.Error(w, "Unauthorized therapist access", http.StatusUnauthorized)
+		return
+	}
+
+	codeIDStr := chi.URLParam(r, "id")
+	codeID, err := uuid.Parse(codeIDStr)
+	if err != nil {
+		http.Error(w, "Invalid UUID format", http.StatusBadRequest)
+		return
+	}
+
+	var codeStr string
+	var isRevoked bool
+	err = database.PostgresDB.QueryRow(`
+		SELECT code, is_revoked FROM referral_codes WHERE id = $1 AND therapist_id = $2
+	`, codeID, therapistID).Scan(&codeStr, &isRevoked)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Referral code not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database validation failure", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if !isRevoked {
+		http.Error(w, "Referral code must be revoked before deletion", http.StatusForbidden)
+		return
+	}
+
+	tx, err := database.PostgresDB.Begin()
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	// Delete related referral usages first
+	if _, err := tx.Exec(`DELETE FROM referral_usages WHERE referral_code_id = $1`, codeID); err != nil {
+		http.Error(w, "Failed to delete referral usages", http.StatusInternalServerError)
+		return
+	}
+
+	// Then delete the referral code record
+	if _, err := tx.Exec(`DELETE FROM referral_codes WHERE id = $1`, codeID); err != nil {
+		http.Error(w, "Failed to delete referral code", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	invalidateReferralCodesCache(therapistID)
+	database.TriggerAuditEvent("REFERRAL_CODE_DELETED", codeID.String(), therapistID.String(), "therapist", fmt.Sprintf("Therapist deleted referral code: %s", codeStr), r)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Referral code deleted successfully",
 	})
 }
 

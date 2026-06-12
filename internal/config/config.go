@@ -21,6 +21,12 @@ type Config struct {
 	LoopsTransactionalID string
 	Host        string // Raw HOST env (e.g. https://backend.salvioris.com) for URLs if needed
 	Environment string // ENV: production, development, etc.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURI  string
+	RazorpayKeyID        string
+	RazorpayKeySecret    string
+	RazorpayWebhookSecret string
 }
 
 func Load() *Config {
@@ -81,6 +87,12 @@ func Load() *Config {
 		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
 		LoopsAPIKey:         getEnv("LOOPS_API_KEY", ""),
 		LoopsTransactionalID: getEnv("LOOPS_TRANSACTIONAL_ID", ""),
+		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURI:  getEnv("GOOGLE_REDIRECT_URI", host+"/api/v1/calendar/oauth/callback"),
+		RazorpayKeyID:        getEnv("RAZORPAY_KEY_ID", ""),
+		RazorpayKeySecret:    getEnv("RAZORPAY_KEY_SECRET", ""),
+		RazorpayWebhookSecret: getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
 	}
 }
 

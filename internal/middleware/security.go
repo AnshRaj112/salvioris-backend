@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	headerXContentTypeOptions        = "X-Content-Type-Options"
-	headerXFrameOptions               = "X-Frame-Options"
-	headerXXSSProtection              = "X-XSS-Protection"
-	headerContentSecurityPolicy       = "Content-Security-Policy"
-	headerStrictTransportSecurity    = "Strict-Transport-Security"
+	headerXContentTypeOptions     = "X-Content-Type-Options"
+	headerXFrameOptions           = "X-Frame-Options"
+	headerXXSSProtection          = "X-XSS-Protection"
+	headerContentSecurityPolicy   = "Content-Security-Policy"
+	headerStrictTransportSecurity = "Strict-Transport-Security"
 )
 
 // SecurityHeaders sets security-related response headers.
@@ -29,17 +29,17 @@ func SecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// --- Global rate limiting (per-IP, 1/s, burst 10) ---
+// --- Global rate limiting (per-IP, 5/s, burst 50) ---
 
 var (
-	globalEntries   = make(map[string]*limiterEntry)
-	globalEntriesMu sync.Mutex
+	globalEntries    = make(map[string]*limiterEntry)
+	globalEntriesMu  sync.Mutex
 	globalCleanupRun bool
 )
 
 const (
-	globalRateLimitRPS   = 1
-	globalRateLimitBurst = 10
+	globalRateLimitRPS    = 5
+	globalRateLimitBurst  = 50
 	globalCleanupInterval = 5 * time.Minute
 	globalLimiterTTL      = 30 * time.Minute
 )
@@ -86,7 +86,7 @@ func startGlobalCleanupOnce() {
 	}()
 }
 
-// GlobalRateLimit limits each IP to 1 req/s, burst 10. Returns 429 when exceeded.
+// GlobalRateLimit limits each IP to 5 req/s, burst 50. Returns 429 when exceeded.
 // /api/chat/history is exempt (uses ChatHistoryRateLimit with higher limits).
 func GlobalRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +109,7 @@ func GlobalRateLimit(next http.Handler) http.Handler {
 	})
 }
 
-// --- Login route rate limiting (1 req/5s, burst 2) ---
+// --- Login route rate limiting (1 req/s, burst 10) ---
 
 var (
 	loginEntries    = make(map[string]*limiterEntry)
@@ -118,8 +118,8 @@ var (
 )
 
 const (
-	loginRateLimitEvery  = 5 * time.Second
-	loginRateLimitBurst  = 2
+	loginRateLimitEvery  = time.Second
+	loginRateLimitBurst  = 10
 	loginCleanupInterval = 5 * time.Minute
 	loginLimiterTTL      = 30 * time.Minute
 )

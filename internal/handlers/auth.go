@@ -458,7 +458,7 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 		"is_approved":          isApproved,
 	}
 
-	// Create Redis session for the approved therapist
+	// Create Redis session for the approved therapist (V1 compat)
 	sessionToken, err := services.CreateSession(therapistID)
 	if err != nil {
 		log.Printf("ERROR: Failed to create session for therapist %s: %v", email.String, err)
@@ -467,12 +467,32 @@ func TherapistSignin(w http.ResponseWriter, r *http.Request) {
 	}
 	services.SetTherapistAuthCache(sessionToken, therapistID)
 
+	tenantID, err := services.EnsureTenantForTherapist(therapistID)
+	if err != nil {
+		log.Printf("ERROR: Failed to ensure tenant for therapist %s: %v", therapistID, err)
+		http.Error(w, "Failed to initialize tenant", http.StatusInternalServerError)
+		return
+	}
+	therapistMap["tenant_id"] = tenantID.String()
+
+	var tokenPair *services.TokenPair
+	if pair, err := services.IssueTherapistTokens(therapistID, tenantID); err == nil {
+		tokenPair = pair
+	}
+
+	resp := map[string]interface{}{
+		"success": true,
+		"message": "Login successful",
+		"user":    therapistMap,
+		"token":   sessionToken,
+	}
+	if tokenPair != nil {
+		resp["access_token"] = tokenPair.AccessToken
+		resp["refresh_token"] = tokenPair.RefreshToken
+		resp["expires_in"] = tokenPair.ExpiresIn
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthResponse{
-		Success: true,
-		Message: "Login successful",
-		User:    therapistMap,
-		Token:   sessionToken, // Expose token to therapist
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 

@@ -393,6 +393,226 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_patient_onboardings_user ON patient_onboardings(user_id)`,
 		`ALTER TABLE patient_onboardings ADD COLUMN IF NOT EXISTS initial_password_hash VARCHAR(255)`,
 
+		// V2: Multi-tenant foundation (P0)
+		`CREATE TABLE IF NOT EXISTS tenants (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			therapist_id UUID NOT NULL UNIQUE REFERENCES therapists(id) ON DELETE CASCADE,
+			display_name VARCHAR(255) NOT NULL,
+			timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tenants_therapist ON tenants(therapist_id)`,
+
+		`CREATE TABLE IF NOT EXISTS refresh_tokens (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			token_hash VARCHAR(64) NOT NULL UNIQUE,
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			expires_at TIMESTAMP NOT NULL,
+			revoked_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)`,
+
+		`CREATE TABLE IF NOT EXISTS patients (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			full_name VARCHAR(255) NOT NULL,
+			date_of_birth DATE,
+			gender VARCHAR(50),
+			phone VARCHAR(50),
+			email VARCHAR(255),
+			emergency_contact TEXT,
+			address TEXT,
+			assigned_therapist_id UUID REFERENCES therapists(id) ON DELETE SET NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_patients_tenant ON patients(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_patients_tenant_status ON patients(tenant_id, status)`,
+
+		// Backfill tenants for existing approved therapists
+		`INSERT INTO tenants (therapist_id, display_name)
+		 SELECT t.id, t.name FROM therapists t
+		 WHERE NOT EXISTS (SELECT 1 FROM tenants tn WHERE tn.therapist_id = t.id)`,
+
+		// V2 P2: Appointments & scheduling
+		`CREATE TABLE IF NOT EXISTS appointments (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			type VARCHAR(20) NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'scheduled',
+			starts_at TIMESTAMP NOT NULL,
+			ends_at TIMESTAMP NOT NULL,
+			meeting_link TEXT,
+			location TEXT,
+			notes TEXT,
+			reminder_sent BOOLEAN NOT NULL DEFAULT FALSE,
+			created_by UUID REFERENCES therapists(id) ON DELETE SET NULL,
+			cancelled_at TIMESTAMP,
+			cancel_reason TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_appointments_tenant_date ON appointments(tenant_id, starts_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_appointments_therapist ON appointments(tenant_id, therapist_id, starts_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_appointments_patient ON appointments(tenant_id, patient_id)`,
+
+		`CREATE TABLE IF NOT EXISTS availability_slots (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			day_of_week SMALLINT NOT NULL,
+			start_time TIME NOT NULL,
+			end_time TIME NOT NULL,
+			slot_duration_min INT NOT NULL DEFAULT 60,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_availability_tenant ON availability_slots(tenant_id, therapist_id)`,
+
+		`CREATE TABLE IF NOT EXISTS calendar_integrations (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			access_token_enc TEXT NOT NULL,
+			refresh_token_enc TEXT NOT NULL,
+			token_expires_at TIMESTAMP,
+			calendar_id VARCHAR(255) DEFAULT 'primary',
+			sync_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(tenant_id, therapist_id)
+		)`,
+
+		// V2 P3: Prescriptions & tasks
+		`CREATE TABLE IF NOT EXISTS prescriptions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			medicine_name VARCHAR(255) NOT NULL,
+			dosage VARCHAR(100) NOT NULL,
+			frequency VARCHAR(100) NOT NULL,
+			duration_days INT,
+			notes TEXT,
+			status VARCHAR(20) NOT NULL DEFAULT 'active',
+			prescribed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP,
+			discontinued_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_prescriptions_patient ON prescriptions(tenant_id, patient_id, status)`,
+
+		`CREATE TABLE IF NOT EXISTS tasks (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+			assigned_by UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			title VARCHAR(255) NOT NULL,
+			description TEXT,
+			category VARCHAR(50),
+			due_at TIMESTAMP,
+			reminder_at TIMESTAMP,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			completed_at TIMESTAMP,
+			patient_notes TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_patient ON tasks(tenant_id, patient_id, status)`,
+
+		// V2 P4: Billing
+		`CREATE TABLE IF NOT EXISTS billing_profiles (
+			tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+			consultation_fee DECIMAL(10,2) DEFAULT 0,
+			session_fee DECIMAL(10,2) DEFAULT 0,
+			package_fees JSONB DEFAULT '[]',
+			gst_rate DECIMAL(5,2) DEFAULT 18.00,
+			invoice_prefix VARCHAR(20) DEFAULT 'INV',
+			currency VARCHAR(10) DEFAULT 'INR',
+			gst_number VARCHAR(50),
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS invoices (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+			invoice_number VARCHAR(50) NOT NULL,
+			appointment_id UUID REFERENCES appointments(id) ON DELETE SET NULL,
+			subtotal DECIMAL(12,2) NOT NULL,
+			gst_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+			total DECIMAL(12,2) NOT NULL,
+			currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+			status VARCHAR(20) NOT NULL DEFAULT 'draft',
+			due_at TIMESTAMP,
+			paid_at TIMESTAMP,
+			pdf_url TEXT,
+			line_items JSONB NOT NULL,
+			notes TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(tenant_id, invoice_number)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_invoices_tenant_status ON invoices(tenant_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_invoices_patient ON invoices(tenant_id, patient_id)`,
+
+		`CREATE TABLE IF NOT EXISTS payments (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+			provider VARCHAR(20) NOT NULL,
+			external_id TEXT,
+			amount DECIMAL(12,2) NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			refunded_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(tenant_id, invoice_id)`,
+
+		// P6: Row-level security (defense-in-depth; use WithTenantRLS for enforcement)
+		`ALTER TABLE patients ENABLE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_patients ON patients`,
+		`CREATE POLICY tenant_isolation_patients ON patients
+			USING (tenant_id::text = current_setting('app.tenant_id', true))`,
+		`ALTER TABLE appointments ENABLE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_appointments ON appointments`,
+		`CREATE POLICY tenant_isolation_appointments ON appointments
+			USING (tenant_id::text = current_setting('app.tenant_id', true))`,
+		`ALTER TABLE invoices ENABLE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_invoices ON invoices`,
+		`CREATE POLICY tenant_isolation_invoices ON invoices
+			USING (tenant_id::text = current_setting('app.tenant_id', true))`,
+		`ALTER TABLE prescriptions ENABLE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_prescriptions ON prescriptions`,
+		`CREATE POLICY tenant_isolation_prescriptions ON prescriptions
+			USING (tenant_id::text = current_setting('app.tenant_id', true))`,
+		`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_tasks ON tasks`,
+		`CREATE POLICY tenant_isolation_tasks ON tasks
+			USING (tenant_id::text = current_setting('app.tenant_id', true))`,
+
+		`CREATE TABLE IF NOT EXISTS calendar_event_mappings (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			appointment_id UUID NOT NULL REFERENCES appointments(id) ON DELETE CASCADE,
+			integration_id UUID NOT NULL REFERENCES calendar_integrations(id) ON DELETE CASCADE,
+			external_event_id TEXT NOT NULL,
+			sync_status VARCHAR(20) NOT NULL DEFAULT 'synced',
+			last_synced_at TIMESTAMP,
+			UNIQUE(appointment_id, integration_id)
+		)`,
+
 		// Function and trigger to enforce append-only nature
 		`CREATE OR REPLACE FUNCTION block_modifications()
 		RETURNS TRIGGER AS $$
