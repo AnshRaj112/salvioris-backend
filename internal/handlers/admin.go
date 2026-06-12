@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/clientip"
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // GetPendingTherapists returns all therapists with is_approved = false
@@ -52,24 +54,24 @@ func GetPendingTherapists(w http.ResponseWriter, r *http.Request) {
 		}
 
 		therapistList = append(therapistList, map[string]interface{}{
-			"id":                    id.String,
-			"name":                  name.String,
-			"email":                 email.String,
-			"created_at":            createdAt,
-			"license_number":       licenseNumber.String,
-			"license_state":        licenseState.String,
-			"years_of_experience":  yearsOfExperience,
-			"specialization":       specialization.String,
-			"phone":                phone.String,
-			"college_degree":       collegeDegree.String,
-			"masters_institution":  mastersInstitution.String,
-			"psychologist_type":    psychologistType.String,
-			"successful_cases":     successfulCases,
-			"dsm_awareness":        dsmAwareness.String,
-			"therapy_types":        therapyTypes.String,
+			"id":                     id.String,
+			"name":                   name.String,
+			"email":                  email.String,
+			"created_at":             createdAt,
+			"license_number":         licenseNumber.String,
+			"license_state":          licenseState.String,
+			"years_of_experience":    yearsOfExperience,
+			"specialization":         specialization.String,
+			"phone":                  phone.String,
+			"college_degree":         collegeDegree.String,
+			"masters_institution":    mastersInstitution.String,
+			"psychologist_type":      psychologistType.String,
+			"successful_cases":       successfulCases,
+			"dsm_awareness":          dsmAwareness.String,
+			"therapy_types":          therapyTypes.String,
 			"certificate_image_path": certificateImagePath.String,
-			"degree_image_path":     degreeImagePath.String,
-			"is_approved":          isApproved,
+			"degree_image_path":      degreeImagePath.String,
+			"is_approved":            isApproved,
 		})
 	}
 
@@ -172,6 +174,75 @@ func RejectTherapist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DeleteTherapist deletes any therapist account and all related tenant/onboarding data.
+func DeleteTherapist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	therapistID, err := parseRequiredUUIDQuery(r, "id")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+
+	tx, err := database.PostgresDB.BeginTx(r.Context(), nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Database error"})
+		return
+	}
+	defer tx.Rollback()
+
+	var tenantIDs []uuid.UUID
+	rows, err := tx.QueryContext(r.Context(), `SELECT id FROM tenants WHERE therapist_id = $1`, therapistID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to load therapist tenants"})
+		return
+	}
+	for rows.Next() {
+		var tenantID uuid.UUID
+		if err := rows.Scan(&tenantID); err == nil {
+			tenantIDs = append(tenantIDs, tenantID)
+		}
+	}
+	rows.Close()
+
+	result, err := tx.ExecContext(r.Context(), `DELETE FROM therapists WHERE id = $1`, therapistID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete therapist: " + err.Error()})
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Therapist not found"})
+		return
+	}
+
+	_, _ = tx.ExecContext(r.Context(), `DELETE FROM notifications WHERE recipient_id = $1 OR (data->>'user_id') = $1`, therapistID.String())
+
+	if err := tx.Commit(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Database error"})
+		return
+	}
+
+	deleteTherapistMongoData(r.Context(), therapistID, tenantIDs)
+	_ = services.InvalidateUserSessions(therapistID)
+	services.Cache.Delete(services.CacheKey("therapists", "approved"))
+	services.Cache.Delete(services.CacheKey("therapists", "pending"))
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Therapist and related data deleted successfully",
+	})
+}
+
 // GetApprovedTherapists returns all approved therapists
 func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdminAuth(w, r); !ok {
@@ -220,24 +291,24 @@ func GetApprovedTherapists(w http.ResponseWriter, r *http.Request) {
 		}
 
 		therapistList = append(therapistList, map[string]interface{}{
-			"id":                    id.String,
-			"name":                  name.String,
-			"email":                 email.String,
-			"created_at":           createdAt,
-			"license_number":       licenseNumber.String,
-			"license_state":        licenseState.String,
-			"years_of_experience":  yearsOfExperience,
-			"specialization":       specialization.String,
-			"phone":                phone.String,
-			"college_degree":       collegeDegree.String,
-			"masters_institution":  mastersInstitution.String,
-			"psychologist_type":    psychologistType.String,
-			"successful_cases":     successfulCases,
-			"dsm_awareness":        dsmAwareness.String,
-			"therapy_types":        therapyTypes.String,
+			"id":                     id.String,
+			"name":                   name.String,
+			"email":                  email.String,
+			"created_at":             createdAt,
+			"license_number":         licenseNumber.String,
+			"license_state":          licenseState.String,
+			"years_of_experience":    yearsOfExperience,
+			"specialization":         specialization.String,
+			"phone":                  phone.String,
+			"college_degree":         collegeDegree.String,
+			"masters_institution":    mastersInstitution.String,
+			"psychologist_type":      psychologistType.String,
+			"successful_cases":       successfulCases,
+			"dsm_awareness":          dsmAwareness.String,
+			"therapy_types":          therapyTypes.String,
 			"certificate_image_path": certificateImagePath.String,
-			"degree_image_path":     degreeImagePath.String,
-			"is_approved":          isApproved,
+			"degree_image_path":      degreeImagePath.String,
+			"is_approved":            isApproved,
 		})
 	}
 
@@ -404,11 +475,11 @@ func UnblockIP(w http.ResponseWriter, r *http.Request) {
 
 	// Return success with details
 	response := map[string]interface{}{
-		"success": true,
-		"message": "IP address unblocked successfully",
+		"success":    true,
+		"message":    "IP address unblocked successfully",
 		"ip_address": ipAddress,
 	}
-	
+
 	if blockedIP != nil {
 		response["previous_reason"] = blockedIP.Reason
 		response["was_blocked_until"] = blockedIP.ExpiresAt
@@ -469,38 +540,60 @@ func GetUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteUser deletes a user by ID (admin only). Cascades to related tables.
+// DeleteUser deletes a user by ID (admin only), including therapist onboarding and V2 patient records.
 func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdminAuth(w, r); !ok {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	userID := r.URL.Query().Get("id")
-	if userID == "" {
+	userID, err := parseRequiredUUIDQuery(r, "id")
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
-			"message": "User ID is required",
-		})
-		return
-	}
-	if _, err := uuid.Parse(userID); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"message": "Invalid user ID",
+			"message": err.Error(),
 		})
 		return
 	}
 
-	result, err := database.PostgresDB.Exec(`DELETE FROM users WHERE id = $1`, userID)
+	tx, err := database.PostgresDB.BeginTx(r.Context(), nil)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"message": "Failed to delete user: " + err.Error(),
-		})
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Database error"})
+		return
+	}
+	defer tx.Rollback()
+
+	patientIDs, tenantIDs, err := loadPatientRefsForUser(r.Context(), tx, userID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to load patient references"})
+		return
+	}
+
+	if _, err = tx.ExecContext(r.Context(), `DELETE FROM patients WHERE user_id = $1`, userID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete patient profiles: " + err.Error()})
+		return
+	}
+	_, _ = tx.ExecContext(r.Context(), `
+		UPDATE groups g
+		SET member_count = GREATEST(g.member_count - memberships.count, 0)
+		FROM (
+			SELECT group_id, COUNT(*)::int AS count
+			FROM group_members
+			WHERE user_id = $1
+			GROUP BY group_id
+		) memberships
+		WHERE g.id = memberships.group_id
+	`, userID)
+	_, _ = tx.ExecContext(r.Context(), `DELETE FROM notifications WHERE recipient_id = $1 OR (data->>'user_id') = $1`, userID.String())
+
+	result, err := tx.ExecContext(r.Context(), `DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete user: " + err.Error()})
 		return
 	}
 	rowsAffected, _ := result.RowsAffected()
@@ -513,10 +606,121 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := tx.Commit(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Database error"})
+		return
+	}
+
+	deleteUserMongoData(r.Context(), userID, patientIDs, tenantIDs)
+	_ = services.InvalidateUserSessions(userID)
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "User deleted successfully",
 	})
+}
+
+func parseRequiredUUIDQuery(r *http.Request, key string) (uuid.UUID, error) {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return uuid.Nil, &badRequestError{message: key + " is required"}
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.Nil, &badRequestError{message: "Invalid " + key}
+	}
+	return id, nil
+}
+
+type badRequestError struct {
+	message string
+}
+
+func (e *badRequestError) Error() string {
+	return e.message
+}
+
+type queryer interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+}
+
+func loadPatientRefsForUser(ctx context.Context, q queryer, userID uuid.UUID) ([]uuid.UUID, []uuid.UUID, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, tenant_id FROM patients WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	patientIDs := []uuid.UUID{}
+	tenantIDs := []uuid.UUID{}
+	seenTenants := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var patientID, tenantID uuid.UUID
+		if err := rows.Scan(&patientID, &tenantID); err != nil {
+			return nil, nil, err
+		}
+		patientIDs = append(patientIDs, patientID)
+		if !seenTenants[tenantID] {
+			tenantIDs = append(tenantIDs, tenantID)
+			seenTenants[tenantID] = true
+		}
+	}
+	return patientIDs, tenantIDs, rows.Err()
+}
+
+func deleteUserMongoData(ctx context.Context, userID uuid.UUID, patientIDs, tenantIDs []uuid.UUID) {
+	if database.DB == nil {
+		return
+	}
+	userIDStr := userID.String()
+	patientIDStrs := uuidStrings(patientIDs)
+	tenantIDStrs := uuidStrings(tenantIDs)
+
+	_, _ = database.DB.Collection("vents").DeleteMany(ctx, bson.M{"user_id": userIDStr})
+	_, _ = database.DB.Collection("journals").DeleteMany(ctx, bson.M{"user_id": userIDStr})
+	_, _ = database.DB.Collection("chat_messages").DeleteMany(ctx, bson.M{"sender_id": userIDStr})
+	_, _ = database.DB.Collection("chat_messages").DeleteMany(ctx, bson.M{"user_id": userIDStr})
+
+	if len(patientIDStrs) > 0 {
+		filter := bson.M{"patient_id": bson.M{"$in": patientIDStrs}}
+		_, _ = database.DB.Collection("wellness_entries").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("patient_journals").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("session_notes").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("ai_insights").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("dm_conversations").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("dm_messages").DeleteMany(ctx, filter)
+	}
+	if len(tenantIDStrs) > 0 {
+		_, _ = database.DB.Collection("session_note_versions").DeleteMany(ctx, bson.M{"tenant_id": bson.M{"$in": tenantIDStrs}})
+	}
+}
+
+func deleteTherapistMongoData(ctx context.Context, therapistID uuid.UUID, tenantIDs []uuid.UUID) {
+	if database.DB == nil {
+		return
+	}
+	therapistIDStr := therapistID.String()
+	tenantIDStrs := uuidStrings(tenantIDs)
+
+	_, _ = database.DB.Collection("dm_conversations").DeleteMany(ctx, bson.M{"therapist_id": therapistIDStr})
+	_, _ = database.DB.Collection("dm_messages").DeleteMany(ctx, bson.M{"therapist_id": therapistIDStr})
+	if len(tenantIDStrs) > 0 {
+		filter := bson.M{"tenant_id": bson.M{"$in": tenantIDStrs}}
+		_, _ = database.DB.Collection("wellness_entries").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("patient_journals").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("session_notes").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("session_note_versions").DeleteMany(ctx, filter)
+		_, _ = database.DB.Collection("ai_insights").DeleteMany(ctx, filter)
+	}
+}
+
+func uuidStrings(ids []uuid.UUID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	return out
 }
 
 // GetAbuseReports returns all secure abuse reports (admin only).
@@ -640,4 +844,3 @@ func AdminBlockGroupMember(w http.ResponseWriter, r *http.Request) {
 		"message": "User evicted and blocked from group chat successfully",
 	})
 }
-

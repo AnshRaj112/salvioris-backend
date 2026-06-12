@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -75,5 +76,24 @@ func (s *CloudinaryService) UploadFile(
 
 	log.Printf("✅ Successfully uploaded to Cloudinary: %s", uploadResult.SecureURL)
 	return uploadResult.SecureURL, nil
+}
+
+// UploadString uploads text content (e.g. HTML invoice) to Cloudinary.
+func (s *CloudinaryService) UploadString(ctx context.Context, content, folder, filename string) (string, error) {
+	params := uploader.UploadParams{
+		ResourceType: "raw",
+		PublicID:     filename,
+	}
+	if folder != "" {
+		params.Folder = folder
+	}
+	uploadResult, err := s.cld.Upload.Upload(ctx, bytes.NewReader([]byte(content)), params)
+	if err != nil {
+		return "", fmt.Errorf("cloudinary upload failed: %w", err)
+	}
+	if uploadResult.SecureURL != "" {
+		return uploadResult.SecureURL, nil
+	}
+	return uploadResult.URL, nil
 }
 

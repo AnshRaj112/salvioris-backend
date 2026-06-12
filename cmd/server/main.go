@@ -26,6 +26,11 @@ func main() {
 	}
 	// Load configuration
 	cfg := config.Load()
+	services.InitJWT(cfg.JWTSecret)
+	services.InitGoogleCalendar(cfg)
+	services.LogCalendarStatus()
+	services.StartCalendarWorker()
+	services.InitRazorpay(cfg)
 
 	// Check encryption key (warn if not set, but don't fail)
 	if cfg.EncryptionKey == "" {
@@ -104,6 +109,11 @@ func main() {
 	} else {
 		log.Println("✅ MongoDB chat indexes ensured")
 	}
+	if err := services.EnsureV2MongoIndexes(context.Background()); err != nil {
+		log.Printf("⚠️  WARNING: failed to ensure V2 MongoDB indexes: %v", err)
+	} else {
+		log.Println("✅ V2 MongoDB indexes ensured")
+	}
 
 	// Start violation cleanup service
 	// Cleans up violations older than 6 hours, runs every hour
@@ -118,23 +128,21 @@ func main() {
 	r.Use(middleware.CORS(cfg.AllowedOrigins))
 
 	// Production: SecurityHeaders → GlobalRateLimit → LoginRateLimit (no host check; no CDN/proxy)
-	// Non-production: Redis-based rate limit only
+	// Non-production: no IP blocking or global request throttling.
 	if cfg.IsProduction() {
 		for _, mw := range middleware.ProductionSecurity() {
 			r.Use(mw)
 		}
 		log.Println("✅ Production security enabled (security headers, per-IP + login rate limiting)")
 	} else {
-		r.Use(middleware.RateLimitMiddleware)
+		log.Println("Development mode: IP blocking and global request throttling disabled")
 	}
 
 	// Chat history rate limit: applies only to GET /api/chat/history (auth: 30/min, anon: 10/min)
 	r.Use(middleware.ChatHistoryRateLimit)
 
-	// Health check (no rate limit)
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
-	})
+	r.Get("/health", handlers.HealthLiveness)
+	r.Get("/ready", handlers.HealthReadiness)
 
 	// Setup routes
 	routes.SetupRoutes(r)

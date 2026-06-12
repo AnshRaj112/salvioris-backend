@@ -195,6 +195,32 @@ func OnboardPatient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sync to V2 patients table for patient self-service dashboard APIs.
+	var tenantID uuid.UUID
+	err = tx.QueryRow(`SELECT id FROM tenants WHERE therapist_id = $1`, therapistID).Scan(&tenantID)
+	if err == sql.ErrNoRows {
+		err = tx.QueryRow(`
+			INSERT INTO tenants (therapist_id, display_name)
+			VALUES ($1, $2)
+			RETURNING id
+		`, therapistID, therapistName).Scan(&tenantID)
+	}
+	if err != nil {
+		log.Printf("ERROR: Failed to ensure tenant for onboarded patient %s: %v", userID, err)
+		http.Error(w, "Failed to link patient dashboard profile", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO patients (tenant_id, user_id, full_name, email, assigned_therapist_id, status)
+		VALUES ($1, $2, $3, $4, $5, 'active')
+	`, tenantID, userID, req.PatientName, req.PatientEmail, therapistID)
+	if err != nil {
+		log.Printf("ERROR: Failed to create V2 patient profile for onboarded user %s: %v", userID, err)
+		http.Error(w, "Failed to link patient dashboard profile", http.StatusInternalServerError)
+		return
+	}
+
 	if err = tx.Commit(); err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
