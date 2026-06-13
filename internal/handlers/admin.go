@@ -10,6 +10,7 @@ import (
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/AnshRaj112/serenify-backend/pkg/clientip"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -224,7 +225,11 @@ func DeleteTherapist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = tx.ExecContext(r.Context(), `DELETE FROM notifications WHERE recipient_id = $1 OR (data->>'user_id') = $1`, therapistID.String())
+	if err := deleteNotificationsForActor(r.Context(), tx, therapistID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete therapist notifications: " + err.Error()})
+		return
+	}
 
 	if err := tx.Commit(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -577,7 +582,7 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete patient profiles: " + err.Error()})
 		return
 	}
-	_, _ = tx.ExecContext(r.Context(), `
+	if _, err = tx.ExecContext(r.Context(), `
 		UPDATE groups g
 		SET member_count = GREATEST(g.member_count - memberships.count, 0)
 		FROM (
@@ -587,8 +592,16 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 			GROUP BY group_id
 		) memberships
 		WHERE g.id = memberships.group_id
-	`, userID)
-	_, _ = tx.ExecContext(r.Context(), `DELETE FROM notifications WHERE recipient_id = $1 OR (data->>'user_id') = $1`, userID.String())
+	`, userID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to update group memberships: " + err.Error()})
+		return
+	}
+	if err := deleteNotificationsForActor(r.Context(), tx, userID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to delete user notifications: " + err.Error()})
+		return
+	}
 
 	result, err := tx.ExecContext(r.Context(), `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
@@ -624,6 +637,9 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 func parseRequiredUUIDQuery(r *http.Request, key string) (uuid.UUID, error) {
 	value := r.URL.Query().Get(key)
 	if value == "" {
+		value = chi.URLParam(r, key)
+	}
+	if value == "" {
 		return uuid.Nil, &badRequestError{message: key + " is required"}
 	}
 	id, err := uuid.Parse(value)
@@ -643,6 +659,15 @@ func (e *badRequestError) Error() string {
 
 type queryer interface {
 	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+}
+
+type execer interface {
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+}
+
+func deleteNotificationsForActor(ctx context.Context, q execer, actorID uuid.UUID) error {
+	_, err := q.ExecContext(ctx, `DELETE FROM notifications WHERE recipient_id = $1 OR (data->>'user_id') = $2`, actorID, actorID.String())
+	return err
 }
 
 func loadPatientRefsForUser(ctx context.Context, q queryer, userID uuid.UUID) ([]uuid.UUID, []uuid.UUID, error) {
