@@ -139,15 +139,6 @@ func requireUserAuth(r *http.Request) (uuid.UUID, bool) {
 	if err != nil || !ok {
 		return uuid.Nil, false
 	}
-
-	var isActive bool
-	err = database.PostgresDB.QueryRow(`
-		SELECT is_active FROM users WHERE id = $1
-	`, userID).Scan(&isActive)
-	if err != nil || !isActive {
-		return uuid.Nil, false
-	}
-
 	return userID, true
 }
 
