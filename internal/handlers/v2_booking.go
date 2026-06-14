@@ -31,6 +31,13 @@ type bookingVerifyRequest struct {
 	AppointmentID string `json:"appointment_id"`
 }
 
+func parseTimeStr(s string) (time.Time, error) {
+	if len(s) == 5 {
+		return time.Parse("15:04", s)
+	}
+	return time.Parse("15:04:05", s)
+}
+
 func GetTherapistAvailabilityForPatientV2(w http.ResponseWriter, r *http.Request) {
 	_, ok := middleware.UserIDFromCtx(r.Context())
 	if !ok {
@@ -81,7 +88,21 @@ func GetTherapistAvailabilityForPatientV2(w http.ResponseWriter, r *http.Request
 		var start, end string
 		var dur int
 		_ = rows.Scan(&start, &end, &dur)
-		slots = append(slots, slot{Start: start, End: end})
+		if dur <= 0 {
+			dur = 60
+		}
+
+		startTime, err1 := parseTimeStr(start)
+		endTime, err2 := parseTimeStr(end)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+
+		for current := startTime; !current.Add(time.Duration(dur) * time.Minute).After(endTime); current = current.Add(time.Duration(dur) * time.Minute) {
+			slotStartStr := current.Format("15:04:05")
+			slotEndStr := current.Add(time.Duration(dur) * time.Minute).Format("15:04:05")
+			slots = append(slots, slot{Start: slotStartStr, End: slotEndStr})
+		}
 	}
 
 	// 2. Define day start and end times for queries
@@ -184,7 +205,23 @@ func InitiateBookingV2(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid starts_at time (RFC3339 format required)", http.StatusBadRequest)
 		return
 	}
-	endsAt := startsAt.Add(60 * time.Minute)
+
+	// Resolve slot duration for this specific block from availability settings
+	slotDuration := 60 // default fallback
+	var dbSlotDur int
+	timeOnlyStr := startsAt.Format("15:04:05")
+	err = database.PostgresDB.QueryRow(`
+		SELECT slot_duration_min 
+		FROM availability_slots
+		WHERE tenant_id = $1 AND therapist_id = $2 AND day_of_week = $3 
+		AND start_time <= $4::time AND end_time >= $4::time AND is_active = TRUE
+		LIMIT 1
+	`, tenantID, therapistID, int(startsAt.Weekday()), timeOnlyStr).Scan(&dbSlotDur)
+	if err == nil && dbSlotDur > 0 {
+		slotDuration = dbSlotDur
+	}
+
+	endsAt := startsAt.Add(time.Duration(slotDuration) * time.Minute)
 
 	// Validate slot is not conflicted in DB
 	conflict, err := services.TherapistHasConflict(therapistID, startsAt, endsAt, nil)
