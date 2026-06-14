@@ -62,9 +62,12 @@ func HandleGoogleCallback(code, state string) error {
 		return err
 	}
 
+	log.Printf("[Google Calendar OAuth] Exchanging auth code for therapist %s (tenant %s)", therapistID, tenantID)
+
 	ctx := context.Background()
 	tok, err := googleOAuthConfig.Exchange(ctx, code)
 	if err != nil {
+		log.Printf("[Google Calendar OAuth] Exchange failed: %v", err)
 		return err
 	}
 
@@ -81,7 +84,12 @@ func HandleGoogleCallback(code, state string) error {
 			sync_enabled = TRUE,
 			updated_at = NOW()
 	`, tenantID, therapistID, accessEnc, refreshEnc, tok.Expiry)
-	return err
+	if err != nil {
+		log.Printf("[Google Calendar OAuth] Failed to save integration: %v", err)
+		return err
+	}
+	log.Printf("[Google Calendar OAuth] Successfully saved integration for therapist %s", therapistID)
+	return nil
 }
 
 func SyncAppointmentToGoogle(job CalendarJob) error {
@@ -97,6 +105,8 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 		return err
 	}
 
+	log.Printf("[Google Calendar Sync] Syncing appointment %s for tenant %s (Action: %s)", appointmentID, tenantID, job.Action)
+
 	lockKey := "cal:sync:lock:" + appointmentID.String()
 	if database.RedisClient != nil {
 		ok, _ := database.RedisClient.SetNX(context.Background(), lockKey, "1", 60*time.Second).Result()
@@ -107,18 +117,18 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 	}
 
 	var therapistID uuid.UUID
-	var patientName, aptType, status, meetingLink, location, notes sql.NullString
+	var patientName, patientEmail, aptType, status, meetingLink, location, notes sql.NullString
 	var startsAt, endsAt time.Time
 	var cancelledAt sql.NullTime
 
 	err = database.PostgresDB.QueryRow(`
-		SELECT a.therapist_id, p.full_name, a.type, a.status, a.starts_at, a.ends_at,
+		SELECT a.therapist_id, p.full_name, p.email, a.type, a.status, a.starts_at, a.ends_at,
 			a.meeting_link, a.location, a.notes, a.cancelled_at
 		FROM appointments a
 		JOIN patients p ON p.id = a.patient_id
 		WHERE a.id = $1 AND a.tenant_id = $2
 	`, appointmentID, tenantID).Scan(
-		&therapistID, &patientName, &aptType, &status, &startsAt, &endsAt,
+		&therapistID, &patientName, &patientEmail, &aptType, &status, &startsAt, &endsAt,
 		&meetingLink, &location, &notes, &cancelledAt,
 	)
 	if err != nil {
@@ -149,12 +159,15 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 		if externalID == "" {
 			return nil
 		}
-		if err := svc.Events.Delete("primary", externalID).Do(); err != nil {
+		log.Printf("[Google Calendar Sync] Deleting event %s for appointment %s", externalID, appointmentID)
+		if err := svc.Events.Delete("primary", externalID).SendUpdates("all").Do(); err != nil {
+			log.Printf("[Google Calendar Sync] Delete failed: %v", err)
 			markSyncFailed(appointmentID, integrationID)
 			return err
 		}
 		_, _ = database.PostgresDB.Exec(`DELETE FROM calendar_event_mappings WHERE appointment_id = $1 AND integration_id = $2`,
 			appointmentID, integrationID)
+		log.Printf("[Google Calendar Sync] Successfully deleted event %s", externalID)
 		return nil
 	default:
 		event := &calendar.Event{
@@ -167,12 +180,19 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 		if meetingLink.Valid && meetingLink.String != "" {
 			event.Description += "\nMeeting: " + meetingLink.String
 		}
+		if patientEmail.Valid && patientEmail.String != "" {
+			event.Attendees = []*calendar.EventAttendee{
+				{Email: patientEmail.String},
+			}
+		}
 
 		if externalID != "" {
-			_, err = svc.Events.Update("primary", externalID, event).Do()
+			log.Printf("[Google Calendar Sync] Updating event %s for appointment %s", externalID, appointmentID)
+			_, err = svc.Events.Update("primary", externalID, event).SendUpdates("all").Do()
 		} else {
+			log.Printf("[Google Calendar Sync] Inserting new event for appointment %s", appointmentID)
 			var created *calendar.Event
-			created, err = svc.Events.Insert("primary", event).Do()
+			created, err = svc.Events.Insert("primary", event).SendUpdates("all").Do()
 			if err == nil {
 				externalID = created.Id
 				_, _ = database.PostgresDB.Exec(`
@@ -185,6 +205,7 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 			}
 		}
 		if err != nil {
+			log.Printf("[Google Calendar Sync] Insert/Update failed: %v", err)
 			markSyncFailed(appointmentID, integrationID)
 			return err
 		}
@@ -192,6 +213,7 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 			UPDATE calendar_event_mappings SET sync_status = 'synced', last_synced_at = NOW()
 			WHERE appointment_id = $1 AND integration_id = $2
 		`, appointmentID, integrationID)
+		log.Printf("[Google Calendar Sync] Successfully completed sync for appointment %s", appointmentID)
 		return nil
 	}
 }
@@ -271,4 +293,45 @@ func LogCalendarStatus() {
 	} else {
 		log.Println("⚠️  Google Calendar not configured (set GOOGLE_CLIENT_ID/SECRET)")
 	}
+}
+
+type TimeRange struct {
+	Start time.Time
+	End   time.Time
+}
+
+func GetGoogleCalendarBusyTimes(tenantID, therapistID uuid.UUID, start, end time.Time) ([]TimeRange, error) {
+	svc, _, err := calendarService(tenantID, therapistID)
+	if err != nil || svc == nil {
+		return nil, err
+	}
+	events, err := svc.Events.List("primary").
+		TimeMin(start.Format(time.RFC3339)).
+		TimeMax(end.Format(time.RFC3339)).
+		SingleEvents(true).
+		Do()
+	if err != nil {
+		return nil, err
+	}
+
+	var ranges []TimeRange
+	for _, item := range events.Items {
+		if item.Start == nil || item.End == nil {
+			continue
+		}
+		sStr := item.Start.DateTime
+		if sStr == "" {
+			sStr = item.Start.Date + "T00:00:00Z"
+		}
+		eStr := item.End.DateTime
+		if eStr == "" {
+			eStr = item.End.Date + "T23:59:59Z"
+		}
+		sTime, err1 := time.Parse(time.RFC3339, sStr)
+		eTime, err2 := time.Parse(time.RFC3339, eStr)
+		if err1 == nil && err2 == nil {
+			ranges = append(ranges, TimeRange{Start: sTime, End: eTime})
+		}
+	}
+	return ranges, nil
 }

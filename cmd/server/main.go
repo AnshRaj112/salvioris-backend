@@ -29,6 +29,7 @@ func main() {
 	services.InitJWT(cfg.JWTSecret)
 	services.InitGoogleCalendar(cfg)
 	services.LogCalendarStatus()
+	services.LogLLMStatus()
 	services.StartCalendarWorker()
 	services.InitRazorpay(cfg)
 

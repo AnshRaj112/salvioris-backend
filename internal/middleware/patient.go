@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/AnshRaj112/serenify-backend/internal/services"
 	"github.com/google/uuid"
@@ -22,15 +23,25 @@ func PatientAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		ctx := context.WithValue(r.Context(), CtxUserID, userID)
+
 		patientID, tenantID, err := services.EnsurePatientProfileForUser(userID)
 		if err != nil {
-			http.Error(w, "No patient profile linked to this account", http.StatusForbidden)
-			return
+			// Allow direct booking & availability endpoints to proceed without a pre-existing patient profile
+			path := r.URL.Path
+			isBookingOrAvailability := strings.HasSuffix(path, "/availability") ||
+				strings.HasSuffix(path, "/booking/initiate") ||
+				strings.HasSuffix(path, "/booking/verify")
+
+			if !isBookingOrAvailability {
+				http.Error(w, "No patient profile linked to this account", http.StatusForbidden)
+				return
+			}
+		} else {
+			ctx = context.WithValue(ctx, CtxPatientID, patientID)
+			ctx = context.WithValue(ctx, CtxTenantID, tenantID)
 		}
 
-		ctx := context.WithValue(r.Context(), CtxUserID, userID)
-		ctx = context.WithValue(ctx, CtxPatientID, patientID)
-		ctx = context.WithValue(ctx, CtxTenantID, tenantID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

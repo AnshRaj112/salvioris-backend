@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/AnshRaj112/serenify-backend/internal/database"
+	"github.com/AnshRaj112/serenify-backend/pkg/utils"
 	"github.com/google/uuid"
 )
 
@@ -110,4 +111,49 @@ func EnsurePatientProfileForUser(userID uuid.UUID) (uuid.UUID, uuid.UUID, error)
 	}
 
 	return patientID, tenantID, nil
+}
+
+func SyncConnectedUsersToPatients(tenantID, therapistID uuid.UUID) error {
+	rows, err := database.PostgresDB.Query(`
+		SELECT c.user_id, u.username
+		FROM therapist_user_connections c
+		JOIN users u ON c.user_id = u.id
+		WHERE c.therapist_id = $1
+	`, therapistID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var uID uuid.UUID
+		var username string
+		if err := rows.Scan(&uID, &username); err == nil {
+			var exists bool
+			_ = database.PostgresDB.QueryRow(`
+				SELECT EXISTS(
+					SELECT 1 FROM patients WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL
+				)
+			`, tenantID, uID).Scan(&exists)
+			if !exists {
+				var emailEncrypted sql.NullString
+				_ = database.PostgresDB.QueryRow(`
+					SELECT email_encrypted FROM user_recovery WHERE user_id = $1
+				`, uID).Scan(&emailEncrypted)
+				
+				emailStr := ""
+				if emailEncrypted.Valid && emailEncrypted.String != "" {
+					if decrypted, err := utils.Decrypt(emailEncrypted.String); err == nil {
+						emailStr = decrypted
+					}
+				}
+
+				_, _ = database.PostgresDB.Exec(`
+					INSERT INTO patients (tenant_id, user_id, full_name, email, assigned_therapist_id, status)
+					VALUES ($1, $2, $3, NULLIF($4, ''), $5, 'active')
+				`, tenantID, uID, username, strings.ToLower(strings.TrimSpace(emailStr)), therapistID)
+			}
+		}
+	}
+	return nil
 }

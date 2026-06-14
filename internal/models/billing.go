@@ -8,16 +8,20 @@ import (
 )
 
 type BillingProfile struct {
-	TenantID         uuid.UUID       `json:"tenant_id"`
-	ConsultationFee  float64         `json:"consultation_fee"`
-	SessionFee       float64         `json:"session_fee"`
-	PackageFees      json.RawMessage `json:"package_fees,omitempty"`
-	GSTRate          float64         `json:"gst_rate"`
-	InvoicePrefix    string          `json:"invoice_prefix"`
-	Currency         string          `json:"currency"`
-	GSTNumber        string          `json:"gst_number,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	TenantID           uuid.UUID       `json:"tenant_id"`
+	ConsultationFee    float64         `json:"consultation_fee"`
+	SessionFee         float64         `json:"session_fee"`
+	SessionFeeInPerson float64         `json:"session_fee_in_person"`
+	SessionFeeChat     float64         `json:"session_fee_chat"`
+	SessionFeeVoice    float64         `json:"session_fee_voice"`
+	SessionFeeVideo    float64         `json:"session_fee_video"`
+	PackageFees        json.RawMessage `json:"package_fees,omitempty"`
+	GSTRate            float64         `json:"gst_rate"`
+	InvoicePrefix      string          `json:"invoice_prefix"`
+	Currency           string          `json:"currency"`
+	GSTNumber          string          `json:"gst_number,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 type InvoiceLineItem struct {

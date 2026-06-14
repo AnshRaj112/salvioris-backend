@@ -251,5 +251,10 @@ func SetupRoutes(r *chi.Mux) {
 		r.Get("/invoices", handlers.ListMyInvoicesV2)
 		r.Post("/invoices/{invoiceId}/pay", handlers.PayMyInvoiceV2)
 		r.Post("/payments/verify", handlers.VerifyPatientPaymentV2)
+
+		// Direct Booking & Availability check
+		r.Get("/therapists/{therapistId}/availability", handlers.GetTherapistAvailabilityForPatientV2)
+		r.Post("/booking/initiate", handlers.InitiateBookingV2)
+		r.Post("/booking/verify", handlers.VerifyBookingPaymentV2)
 	})
 }

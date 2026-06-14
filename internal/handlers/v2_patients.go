@@ -32,6 +32,8 @@ func ListPatientsV2(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	therapistID, _ := middleware.TherapistIDFromCtx(r.Context())
+	_ = services.SyncConnectedUsersToPatients(tenantID, therapistID)
 
 	rows, err := database.PostgresDB.Query(`
 		SELECT id, tenant_id, user_id, full_name, date_of_birth, gender, phone, email,

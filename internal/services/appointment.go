@@ -10,6 +10,7 @@ import (
 
 var validAptTypes = map[string]bool{
 	"online": true, "in_person": true, "walk_in": true, "emergency": true,
+	"chat": true, "voice": true, "video": true,
 }
 
 func ValidateAppointmentType(t string) bool {
@@ -20,7 +21,7 @@ func TherapistHasConflict(therapistID uuid.UUID, startsAt, endsAt time.Time, exc
 	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM appointments
-			WHERE therapist_id = $1 AND status NOT IN ('cancelled', 'no_show')
+			WHERE therapist_id = $1 AND status NOT IN ('cancelled', 'no_show', 'pending_payment')
 			AND starts_at < $3 AND ends_at > $2
 	`
 	args := []interface{}{therapistID, startsAt, endsAt}

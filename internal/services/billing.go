@@ -26,17 +26,24 @@ func GetBillingProfile(tenantID uuid.UUID) (models.BillingProfile, error) {
 	var consult, session, gst sql.NullFloat64
 	var prefix, currency, gstNum sql.NullString
 	var packages sql.NullString
+	var sessionInPerson, sessionChat, sessionVoice, sessionVideo sql.NullFloat64
 	err := database.PostgresDB.QueryRow(`
 		SELECT tenant_id, consultation_fee, session_fee, package_fees, gst_rate,
-			invoice_prefix, currency, gst_number, created_at, updated_at
+			invoice_prefix, currency, gst_number, created_at, updated_at,
+			session_fee_in_person, session_fee_chat, session_fee_voice, session_fee_video
 		FROM billing_profiles WHERE tenant_id = $1
 	`, tenantID).Scan(&p.TenantID, &consult, &session, &packages, &gst,
-		&prefix, &currency, &gstNum, &p.CreatedAt, &p.UpdatedAt)
+		&prefix, &currency, &gstNum, &p.CreatedAt, &p.UpdatedAt,
+		&sessionInPerson, &sessionChat, &sessionVoice, &sessionVideo)
 	if err != nil {
 		return p, err
 	}
 	p.ConsultationFee = consult.Float64
 	p.SessionFee = session.Float64
+	p.SessionFeeInPerson = sessionInPerson.Float64
+	p.SessionFeeChat = sessionChat.Float64
+	p.SessionFeeVoice = sessionVoice.Float64
+	p.SessionFeeVideo = sessionVideo.Float64
 	p.GSTRate = gst.Float64
 	if p.GSTRate == 0 {
 		p.GSTRate = 18
@@ -86,18 +93,44 @@ func LineItemsFromAppointment(tenantID uuid.UUID, appointmentID uuid.UUID) ([]mo
 	if err != nil {
 		return nil, err
 	}
-	amount := profile.SessionFee
-	desc := "Session fee"
-	if aptType == "online" {
+	amount := 0.0
+	desc := ""
+	switch aptType {
+	case "in_person":
+		amount = profile.SessionFeeInPerson
+		desc = "In-Person Session"
+	case "chat":
+		amount = profile.SessionFeeChat
+		desc = "Chat Session"
+	case "voice":
+		amount = profile.SessionFeeVoice
+		desc = "Voice Call Session"
+	case "video":
+		amount = profile.SessionFeeVideo
+		desc = "Video Call Session"
+	case "online":
 		amount = profile.ConsultationFee
-		if amount == 0 {
+		desc = "Online Consultation"
+	default:
+		amount = profile.SessionFee
+		desc = "Therapy Session"
+	}
+
+	// Fallbacks if specific fee is zero
+	if amount == 0 {
+		if aptType == "in_person" {
 			amount = profile.SessionFee
+		} else {
+			amount = profile.ConsultationFee
+			if amount == 0 {
+				amount = profile.SessionFee
+			}
 		}
-		desc = "Online consultation"
 	}
 	if amount == 0 {
-		amount = profile.SessionFee
+		amount = 1000 // default fallback
 	}
+
 	return []models.InvoiceLineItem{{Description: desc, Amount: amount}}, nil
 }
 

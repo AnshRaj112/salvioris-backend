@@ -535,6 +535,10 @@ func InitPostgresTables() error {
 			tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
 			consultation_fee DECIMAL(10,2) DEFAULT 0,
 			session_fee DECIMAL(10,2) DEFAULT 0,
+			session_fee_in_person DECIMAL(10,2) DEFAULT 0,
+			session_fee_chat DECIMAL(10,2) DEFAULT 0,
+			session_fee_voice DECIMAL(10,2) DEFAULT 0,
+			session_fee_video DECIMAL(10,2) DEFAULT 0,
 			package_fees JSONB DEFAULT '[]',
 			gst_rate DECIMAL(5,2) DEFAULT 18.00,
 			invoice_prefix VARCHAR(20) DEFAULT 'INV',
@@ -626,6 +630,12 @@ func InitPostgresTables() error {
 		`CREATE TRIGGER restrict_audit_mutations
 		BEFORE UPDATE OR DELETE ON security_audit_logs
 		FOR EACH ROW EXECUTE FUNCTION block_modifications()`,
+
+		// Add session fee types to billing profiles
+		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_in_person DECIMAL(10,2) DEFAULT 0`,
+		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_chat DECIMAL(10,2) DEFAULT 0`,
+		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_voice DECIMAL(10,2) DEFAULT 0`,
+		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_video DECIMAL(10,2) DEFAULT 0`,
 	}
 
 	for _, query := range queries {

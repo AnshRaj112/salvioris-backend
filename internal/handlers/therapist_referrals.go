@@ -806,6 +806,19 @@ func GetTherapistMe(w http.ResponseWriter, r *http.Request) {
 		"is_approved":          isApproved,
 	}
 
+	tenantID, err := services.EnsureTenantForTherapist(therapistID)
+	if err == nil {
+		_ = services.EnsureBillingProfile(tenantID)
+		var chatFee, inPersonFee float64
+		err = database.PostgresDB.QueryRow(`
+			SELECT session_fee_chat, session_fee_in_person FROM billing_profiles WHERE tenant_id = $1
+		`, tenantID).Scan(&chatFee, &inPersonFee)
+		if err == nil {
+			therapistMap["session_fee_chat"] = chatFee
+			therapistMap["session_fee_in_person"] = inPersonFee
+		}
+	}
+
 	resp, _ := json.Marshal(map[string]interface{}{"success": true, "user": therapistMap})
 	writeTherapistCache(therapistID, "me", resp)
 	w.Header().Set("Content-Type", "application/json")
@@ -821,11 +834,13 @@ func UpdateTherapistProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Specialization    string `json:"specialization"`
-		Phone             string `json:"phone"`
-		YearsOfExperience int    `json:"years_of_experience"`
-		DSMAwareness      string `json:"dsm_awareness"`
-		TherapyTypes      string `json:"therapy_types"`
+		Specialization     string  `json:"specialization"`
+		Phone              string  `json:"phone"`
+		YearsOfExperience  int     `json:"years_of_experience"`
+		DSMAwareness       string  `json:"dsm_awareness"`
+		TherapyTypes       string  `json:"therapy_types"`
+		SessionFeeChat     float64 `json:"session_fee_chat"`
+		SessionFeeInPerson float64 `json:"session_fee_in_person"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid body", http.StatusBadRequest)
@@ -837,13 +852,42 @@ func UpdateTherapistProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := database.PostgresDB.Exec(`
+	tx, err := database.PostgresDB.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`
 		UPDATE therapists
 		SET specialization = $1, phone = $2, years_of_experience = $3, dsm_awareness = $4, therapy_types = $5, updated_at = NOW()
 		WHERE id = $6
 	`, req.Specialization, req.Phone, req.YearsOfExperience, req.DSMAwareness, req.TherapyTypes, therapistID)
 	if err != nil {
 		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
+		return
+	}
+
+	tenantID, err := services.EnsureTenantForTherapist(therapistID)
+	if err != nil {
+		http.Error(w, "Failed to resolve therapist tenant", http.StatusInternalServerError)
+		return
+	}
+
+	_ = services.EnsureBillingProfile(tenantID)
+	_, err = tx.Exec(`
+		UPDATE billing_profiles
+		SET session_fee_chat = $2, session_fee_in_person = $3, updated_at = NOW()
+		WHERE tenant_id = $1
+	`, tenantID, req.SessionFeeChat, req.SessionFeeInPerson)
+	if err != nil {
+		http.Error(w, "Failed to update pricing profile", http.StatusInternalServerError)
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
 
@@ -1083,6 +1127,23 @@ func GetTherapistProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get billing profile
+	var billingMap map[string]interface{}
+	if tenantID, err := services.EnsureTenantForTherapist(therapistID); err == nil {
+		if bp, err := services.GetBillingProfile(tenantID); err == nil {
+			billingMap = map[string]interface{}{
+				"consultation_fee":      bp.ConsultationFee,
+				"session_fee":           bp.SessionFee,
+				"session_fee_in_person": bp.SessionFeeInPerson,
+				"session_fee_chat":      bp.SessionFeeChat,
+				"session_fee_voice":     bp.SessionFeeVoice,
+				"session_fee_video":     bp.SessionFeeVideo,
+				"currency":              bp.Currency,
+				"gst_rate":              bp.GSTRate,
+			}
+		}
+	}
+
 	t := map[string]interface{}{
 		"id":                  therapistID.String(),
 		"name":                name.String,
@@ -1096,6 +1157,7 @@ func GetTherapistProfile(w http.ResponseWriter, r *http.Request) {
 		"successful_cases":     successfulCases,
 		"therapy_types":        therapyTypes.String,
 		"is_approved":          isApproved,
+		"billing_profile":      billingMap,
 	}
 
 	// Include connection state for UI flows
