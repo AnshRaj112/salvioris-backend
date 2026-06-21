@@ -75,14 +75,14 @@ func UpdateBillingProfileV2(w http.ResponseWriter, r *http.Request) {
 	_ = services.EnsureBillingProfile(tenantID)
 	_, err := database.PostgresDB.Exec(`
 		UPDATE billing_profiles SET
-			consultation_fee = $2, session_fee = $3, gst_rate = $4,
-			invoice_prefix = COALESCE(NULLIF($5,''), invoice_prefix),
-			gst_number = $6, package_fees = $7,
-			session_fee_in_person = $8, session_fee_chat = $9,
-			session_fee_voice = $10, session_fee_video = $11,
+			consultation_fee = $2, session_fee = $3,
+			invoice_prefix = COALESCE(NULLIF($4,''), invoice_prefix),
+			gst_number = $5, package_fees = $6,
+			session_fee_in_person = $7, session_fee_chat = $8,
+			session_fee_voice = $9, session_fee_video = $10,
 			updated_at = NOW()
 		WHERE tenant_id = $1
-	`, tenantID, req.ConsultationFee, req.SessionFee, req.GSTRate,
+	`, tenantID, req.ConsultationFee, req.SessionFee,
 		req.InvoicePrefix, nullStr(req.GSTNumber), nullableJSON(req.PackageFees),
 		req.SessionFeeInPerson, req.SessionFeeChat, req.SessionFeeVoice, req.SessionFeeVideo)
 	if err != nil {

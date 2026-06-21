@@ -67,6 +67,8 @@ func SetupRoutes(r *chi.Mux) {
 	r.Delete("/api/admin/therapists", handlers.DeleteTherapist)
 	r.Delete("/api/admin/therapists/{id}", handlers.DeleteTherapist)
 	r.Delete("/api/admin/therapists/reject", handlers.RejectTherapist)
+	r.Get("/api/admin/therapists/{id}/gst", handlers.GetTherapistGSTRate)
+	r.Put("/api/admin/therapists/{id}/gst", handlers.UpdateTherapistGSTRate)
 	r.Get("/api/admin/violations", handlers.GetViolations)
 	r.Get("/api/admin/blocked-ips", handlers.GetBlockedIPs)
 	r.Put("/api/admin/unblock-ip", handlers.UnblockIP)

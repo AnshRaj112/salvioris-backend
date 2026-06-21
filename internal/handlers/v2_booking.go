@@ -61,7 +61,15 @@ func GetTherapistAvailabilityForPatientV2(w http.ResponseWriter, r *http.Request
 	if dateStr == "" {
 		dateStr = time.Now().Format("2006-01-02")
 	}
-	day, err := time.Parse("2006-01-02", dateStr)
+
+	timezoneStr := "Asia/Kolkata"
+	_ = database.PostgresDB.QueryRow(`SELECT timezone FROM tenants WHERE id = $1`, tenantID).Scan(&timezoneStr)
+	loc, _ := time.LoadLocation(timezoneStr)
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	day, err := time.ParseInLocation("2006-01-02", dateStr, loc)
 	if err != nil {
 		http.Error(w, "Invalid date format (use YYYY-MM-DD)", http.StatusBadRequest)
 		return
@@ -152,9 +160,9 @@ func GetTherapistAvailabilityForPatientV2(w http.ResponseWriter, r *http.Request
 			sEndStr += ":00"
 		}
 		
-		// Parse in local or UTC. We parse as selected date string + Z
-		slotStart, err1 := time.Parse("2006-01-02T15:04:05", sStartStr)
-		slotEnd, err2 := time.Parse("2006-01-02T15:04:05", sEndStr)
+		// Parse in the therapist's local timezone
+		slotStart, err1 := time.ParseInLocation("2006-01-02T15:04:05", sStartStr, loc)
+		slotEnd, err2 := time.ParseInLocation("2006-01-02T15:04:05", sEndStr, loc)
 		if err1 != nil || err2 != nil {
 			continue
 		}
@@ -206,17 +214,26 @@ func InitiateBookingV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	timezoneStr := "Asia/Kolkata"
+	_ = database.PostgresDB.QueryRow(`SELECT timezone FROM tenants WHERE id = $1`, tenantID).Scan(&timezoneStr)
+	loc, _ := time.LoadLocation(timezoneStr)
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	startsAtLocal := startsAt.In(loc)
+	timeOnlyStr := startsAtLocal.Format("15:04:05")
+
 	// Resolve slot duration for this specific block from availability settings
 	slotDuration := 60 // default fallback
 	var dbSlotDur int
-	timeOnlyStr := startsAt.Format("15:04:05")
 	err = database.PostgresDB.QueryRow(`
 		SELECT slot_duration_min 
 		FROM availability_slots
 		WHERE tenant_id = $1 AND therapist_id = $2 AND day_of_week = $3 
 		AND start_time <= $4::time AND end_time >= $4::time AND is_active = TRUE
 		LIMIT 1
-	`, tenantID, therapistID, int(startsAt.Weekday()), timeOnlyStr).Scan(&dbSlotDur)
+	`, tenantID, therapistID, int(startsAtLocal.Weekday()), timeOnlyStr).Scan(&dbSlotDur)
 	if err == nil && dbSlotDur > 0 {
 		slotDuration = dbSlotDur
 	}

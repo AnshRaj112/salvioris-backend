@@ -869,3 +869,93 @@ func AdminBlockGroupMember(w http.ResponseWriter, r *http.Request) {
 		"message": "User evicted and blocked from group chat successfully",
 	})
 }
+
+// GetTherapistGSTRate fetches the GST rate for a therapist (admin only)
+func GetTherapistGSTRate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	therapistID, err := parseRequiredUUIDQuery(r, "id")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+
+	tenantID, err := services.EnsureTenantForTherapist(therapistID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to resolve tenant: " + err.Error()})
+		return
+	}
+
+	profile, err := services.GetBillingProfile(tenantID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to load billing profile: " + err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"gst_rate": profile.GSTRate,
+	})
+}
+
+type updateGSTRateRequest struct {
+	GSTRate float64 `json:"gst_rate"`
+}
+
+// UpdateTherapistGSTRate updates the GST rate for a therapist (admin only)
+func UpdateTherapistGSTRate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdminAuth(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	therapistID, err := parseRequiredUUIDQuery(r, "id")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+
+	var req updateGSTRateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Invalid request body"})
+		return
+	}
+
+	tenantID, err := services.EnsureTenantForTherapist(therapistID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to resolve tenant: " + err.Error()})
+		return
+	}
+
+	err = services.EnsureBillingProfile(tenantID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to ensure billing profile: " + err.Error()})
+		return
+	}
+
+	_, err = database.PostgresDB.ExecContext(r.Context(), `
+		UPDATE billing_profiles
+		SET gst_rate = $2, updated_at = NOW()
+		WHERE tenant_id = $1
+	`, tenantID, req.GSTRate)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Failed to update GST rate: " + err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "GST rate updated successfully",
+	})
+}

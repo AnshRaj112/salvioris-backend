@@ -89,6 +89,7 @@ func HandleGoogleCallback(code, state string) error {
 		return err
 	}
 	log.Printf("[Google Calendar OAuth] Successfully saved integration for therapist %s", therapistID)
+	go SyncAllPendingAppointments(tenantID, therapistID)
 	return nil
 }
 
@@ -140,6 +141,7 @@ func SyncAppointmentToGoogle(job CalendarJob) error {
 		return err
 	}
 	if svc == nil {
+		NotifyUser(therapistID, "therapist", "Google Calendar Not Connected", "Please connect your Google Calendar in your dashboard settings to automatically synchronize your booked therapy sessions.", "calendar")
 		return nil
 	}
 
@@ -334,4 +336,30 @@ func GetGoogleCalendarBusyTimes(tenantID, therapistID uuid.UUID, start, end time
 		}
 	}
 	return ranges, nil
+}
+
+func SyncAllPendingAppointments(tenantID, therapistID uuid.UUID) {
+	// Fetch all scheduled (non-cancelled) appointments for this therapist that don't have a successful sync mapping
+	rows, err := database.PostgresDB.Query(`
+		SELECT a.id FROM appointments a
+		WHERE a.tenant_id = $1 AND a.therapist_id = $2 
+		AND a.status = 'scheduled'
+		AND NOT EXISTS (
+			SELECT 1 FROM calendar_event_mappings m
+			WHERE m.appointment_id = a.id AND m.sync_status = 'synced'
+		)
+	`, tenantID, therapistID)
+	if err != nil {
+		log.Printf("[Google Calendar Sync] Failed to query pending appointments for retroactive sync: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var aptID uuid.UUID
+		if err := rows.Scan(&aptID); err == nil {
+			log.Printf("[Google Calendar Sync] Retroactively enqueuing calendar sync for appointment %s", aptID)
+			EnqueueCalendarSync("create", tenantID, aptID)
+		}
+	}
 }
