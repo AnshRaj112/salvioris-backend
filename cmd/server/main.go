@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
 	"github.com/joho/godotenv"
 
+	backend "github.com/AnshRaj112/serenify-backend"
 	"github.com/AnshRaj112/serenify-backend/internal/config"
 	"github.com/AnshRaj112/serenify-backend/internal/database"
 	"github.com/AnshRaj112/serenify-backend/internal/handlers"
@@ -19,6 +21,9 @@ import (
 )
 
 func main() {
+	// Print logo banner
+	fmt.Print(backend.GetBanner())
+
 	// Load env
 	err := godotenv.Load()
 	if err != nil {
