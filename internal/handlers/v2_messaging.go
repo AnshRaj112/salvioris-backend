@@ -23,6 +23,11 @@ type sendMessageRequest struct {
 	AttachmentURL string `json:"attachment_url,omitempty"`
 }
 
+type DMConversationResponse struct {
+	models.DMConversation
+	PatientName string `json:"patient_name"`
+}
+
 func ListConversationsV2(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := middleware.TenantIDFromCtx(r.Context())
 	ctx, cancel := mongoCtx()
@@ -39,7 +44,33 @@ func ListConversationsV2(w http.ResponseWriter, r *http.Request) {
 
 	var convos []models.DMConversation
 	_ = cursor.All(ctx, &convos)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"data": convos})
+
+	patientNames := make(map[string]string)
+	rows, err := database.PostgresDB.Query(`SELECT id, full_name FROM patients WHERE tenant_id = $1`, tenantID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pid uuid.UUID
+			var name string
+			if err := rows.Scan(&pid, &name); err == nil {
+				patientNames[pid.String()] = name
+			}
+		}
+	}
+
+	responseList := make([]DMConversationResponse, 0)
+	for _, c := range convos {
+		name := patientNames[c.PatientID]
+		if name == "" {
+			name = "Unknown Patient"
+		}
+		responseList = append(responseList, DMConversationResponse{
+			DMConversation: c,
+			PatientName:    name,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"data": responseList})
 }
 
 func GetOrCreatePatientConversationV2(w http.ResponseWriter, r *http.Request) {
