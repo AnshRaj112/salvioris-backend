@@ -54,7 +54,8 @@ func CreateSession(userID uuid.UUID) (string, error) {
 	return sessionToken, nil
 }
 
-// ValidateSession checks if a session token is valid and returns the user ID
+// ValidateSession checks if a session token is valid and returns the user ID.
+// It also slides the TTL — every successful validation extends the session by another 7 days.
 func ValidateSession(sessionToken string) (uuid.UUID, bool, error) {
 	if sessionToken == "" {
 		return uuid.Nil, false, nil
@@ -73,6 +74,11 @@ func ValidateSession(sessionToken string) (uuid.UUID, bool, error) {
 	if err != nil {
 		return uuid.Nil, false, err
 	}
+
+	// Slide the TTL — reset expiry to 7 days from now on every use
+	userSessionKey := UserSessionKeyPrefix + userID.String()
+	database.RedisClient.Expire(ctx, sessionKey, SessionDuration)
+	database.RedisClient.Expire(ctx, userSessionKey, SessionDuration)
 
 	return userID, true, nil
 }

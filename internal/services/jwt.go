@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	AccessTokenDuration  = 15 * time.Minute
-	RefreshTokenDuration = 30 * 24 * time.Hour
+	AccessTokenDuration  = 7 * 24 * time.Hour  // 7 days — matches session duration
+	RefreshTokenDuration = 30 * 24 * time.Hour // 30 days
 )
 
 type TokenClaims struct {
@@ -99,6 +99,76 @@ func ValidateAccessToken(tokenStr string) (*TokenClaims, bool) {
 	}
 	claims, ok := token.Claims.(*TokenClaims)
 	if !ok || claims.Role != "therapist" {
+		return nil, false
+	}
+	return claims, true
+}
+
+// issueReceptionistAccessToken mints a short-lived JWT for a receptionist.
+func issueReceptionistAccessToken(receptionistID, tenantID uuid.UUID) (string, error) {
+	now := time.Now()
+	claims := TokenClaims{
+		UserID:   receptionistID.String(),
+		TenantID: tenantID.String(),
+		Role:     "receptionist",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   receptionistID.String(),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(AccessTokenDuration)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
+// IssueReceptionistTokens creates an access+refresh token pair for a receptionist.
+func IssueReceptionistTokens(receptionistID, tenantID uuid.UUID) (*TokenPair, error) {
+	if len(jwtSecret) == 0 {
+		return nil, errors.New("jwt not configured")
+	}
+
+	accessToken, err := issueReceptionistAccessToken(receptionistID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshRaw, err := newRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+
+	// Reuse the refresh_tokens table — role is embedded in the access token claims
+	_, err = database.PostgresDB.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, tenant_id, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`, receptionistID, hashToken(refreshRaw), tenantID, time.Now().Add(RefreshTokenDuration))
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: refreshRaw,
+		ExpiresIn:    int(AccessTokenDuration.Seconds()),
+	}, nil
+}
+
+// ValidateReceptionistAccessToken validates a JWT and ensures role == "receptionist".
+func ValidateReceptionistAccessToken(tokenStr string) (*TokenClaims, bool) {
+	if len(jwtSecret) == 0 || tokenStr == "" {
+		return nil, false
+	}
+	token, err := jwt.ParseWithClaims(tokenStr, &TokenClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, false
+	}
+	claims, ok := token.Claims.(*TokenClaims)
+	if !ok || claims.Role != "receptionist" {
 		return nil, false
 	}
 	return claims, true

@@ -299,6 +299,7 @@ func InitPostgresTables() error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_security_audit_actor ON security_audit_logs(actor_id)`,
+		`ALTER TABLE security_audit_logs ADD COLUMN IF NOT EXISTS actor_role VARCHAR(50) NOT NULL DEFAULT 'unknown'`,
 
 		// 1. Referral Codes Table
 		`CREATE TABLE IF NOT EXISTS referral_codes (
@@ -636,6 +637,23 @@ func InitPostgresTables() error {
 		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_chat DECIMAL(10,2) DEFAULT 0`,
 		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_voice DECIMAL(10,2) DEFAULT 0`,
 		`ALTER TABLE billing_profiles ADD COLUMN IF NOT EXISTS session_fee_video DECIMAL(10,2) DEFAULT 0`,
+
+		// Receptionists table (tenant-scoped, therapist-managed)
+		`CREATE TABLE IF NOT EXISTS receptionists (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			therapist_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			name VARCHAR(255) NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			password_hash VARCHAR(255) NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			UNIQUE(tenant_id, email)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_receptionists_tenant ON receptionists(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_receptionists_email ON receptionists(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_receptionists_therapist ON receptionists(therapist_id)`,
 	}
 
 	for _, query := range queries {

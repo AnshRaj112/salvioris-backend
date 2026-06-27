@@ -10,7 +10,7 @@ import (
 
 const (
 	therapistAuthKeyPrefix = "therapist_auth:"
-	therapistAuthTTL       = 30 * time.Minute
+	therapistAuthTTL       = 7 * 24 * time.Hour // 7 days — matches session and JWT duration
 )
 
 // SetTherapistAuthCache marks a session token as an approved therapist session.
@@ -27,11 +27,14 @@ func SetTherapistAuthCache(sessionToken string, therapistID uuid.UUID) {
 }
 
 // GetTherapistAuthCache returns a cached therapist ID for a session token.
+// It also slides the TTL — every successful lookup extends the cache entry by 7 days.
 func GetTherapistAuthCache(sessionToken string) (uuid.UUID, bool) {
 	if sessionToken == "" || database.RedisClient == nil {
 		return uuid.Nil, false
 	}
-	val, err := database.RedisClient.Get(context.Background(), therapistAuthKeyPrefix+sessionToken).Result()
+	ctx := context.Background()
+	key := therapistAuthKeyPrefix + sessionToken
+	val, err := database.RedisClient.Get(ctx, key).Result()
 	if err != nil {
 		return uuid.Nil, false
 	}
@@ -39,6 +42,8 @@ func GetTherapistAuthCache(sessionToken string) (uuid.UUID, bool) {
 	if err != nil {
 		return uuid.Nil, false
 	}
+	// Slide the TTL on every successful use
+	database.RedisClient.Expire(ctx, key, therapistAuthTTL)
 	return id, true
 }
 

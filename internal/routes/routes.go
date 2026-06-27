@@ -260,4 +260,37 @@ func SetupRoutes(r *chi.Mux) {
 		r.Post("/booking/initiate", handlers.InitiateBookingV2)
 		r.Post("/booking/verify", handlers.VerifyBookingPaymentV2)
 	})
+
+	// ── Receptionist Auth (public — no tenant prefix required) ──────────────────
+	r.Post("/api/auth/receptionist/signin", handlers.ReceptionistSignin)
+	r.Post("/api/auth/receptionist/signout", handlers.ReceptionistSignout)
+
+	// ── Therapist-managed Receptionist Staff (under TenantAuth) ────────────────
+	r.Route("/api/v1/tenant/{tenantId}", func(r chi.Router) {
+		r.Use(middleware.TenantAuth)
+		r.Post("/receptionists", handlers.TherapistCreateReceptionist)
+		r.Get("/receptionists", handlers.TherapistListReceptionists)
+		r.Delete("/receptionists/{receptionistId}", handlers.TherapistDeactivateReceptionist)
+		r.Patch("/receptionists/{receptionistId}/reactivate", handlers.TherapistReactivateReceptionist)
+	})
+
+	// ── Reception Portal (all endpoints under ReceptionistAuth) ────────────────
+	r.Route("/api/v1/reception/{tenantId}", func(r chi.Router) {
+		r.Use(middleware.ReceptionistAuth)
+
+		// Appointments — full calendar view + walk-in creation
+		r.Get("/appointments", handlers.ReceptionListAppointments)
+		r.Post("/appointments/walk-in", handlers.ReceptionWalkIn)
+		r.Post("/appointments/quick-register", handlers.ReceptionQuickRegister)
+
+		// Patients — list only (no clinical data)
+		r.Get("/patients", handlers.ReceptionListPatients)
+
+		// Billing — view invoices + collect payment
+		r.Get("/invoices", handlers.ReceptionListInvoices)
+		r.Post("/invoices/collect-payment", handlers.ReceptionCollectPayment)
+
+		// Referrals — read-only
+		r.Get("/referral-codes", handlers.ReceptionListReferralCodes)
+	})
 }
