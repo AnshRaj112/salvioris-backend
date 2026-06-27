@@ -57,9 +57,16 @@ func CreateWellnessV2(w http.ResponseWriter, r *http.Request) {
 		"entry_date": entryDate,
 	}
 	update := bson.M{
-		"$set": entry,
+		"$set": bson.M{
+			"metrics":    entry.Metrics,
+			"reflection": entry.Reflection,
+			"updated_at": entry.UpdatedAt,
+		},
 		"$setOnInsert": bson.M{
 			"_id":        primitive.NewObjectID(),
+			"tenant_id":  entry.TenantID,
+			"patient_id": entry.PatientID,
+			"entry_date": entry.EntryDate,
 			"created_at": now,
 		},
 	}
@@ -68,7 +75,7 @@ func CreateWellnessV2(w http.ResponseWriter, r *http.Request) {
 	var result models.WellnessEntry
 	err := database.DB.Collection("wellness_entries").FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
 	if err != nil {
-		http.Error(w, "Failed to save wellness entry", http.StatusInternalServerError)
+		http.Error(w, "Failed to save wellness entry: " + err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"data": result})
