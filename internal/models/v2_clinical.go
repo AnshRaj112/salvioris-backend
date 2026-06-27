@@ -39,15 +39,18 @@ type SessionNoteVersion struct {
 }
 
 type WellnessMetrics struct {
-	Mood                  *int   `bson:"mood,omitempty" json:"mood,omitempty"`
-	Anxiety               *int   `bson:"anxiety,omitempty" json:"anxiety,omitempty"`
-	Stress                *int   `bson:"stress,omitempty" json:"stress,omitempty"`
+	Mood                  *int     `bson:"mood,omitempty" json:"mood,omitempty"`
+	Anxiety               *int     `bson:"anxiety,omitempty" json:"anxiety,omitempty"`
+	Stress                *int     `bson:"stress,omitempty" json:"stress,omitempty"`
 	SleepHours            *float64 `bson:"sleep_hours,omitempty" json:"sleep_hours,omitempty"`
-	SleepQuality          *int   `bson:"sleep_quality,omitempty" json:"sleep_quality,omitempty"`
-	Energy                *int   `bson:"energy,omitempty" json:"energy,omitempty"`
-	Focus                 *int   `bson:"focus,omitempty" json:"focus,omitempty"`
-	MedicationAdherence   *bool  `bson:"medication_adherence,omitempty" json:"medication_adherence,omitempty"`
-	MedicationNotes       string `bson:"medication_notes,omitempty" json:"medication_notes,omitempty"`
+	SleepQuality          *int     `bson:"sleep_quality,omitempty" json:"sleep_quality,omitempty"`
+	Energy                *int     `bson:"energy,omitempty" json:"energy,omitempty"`
+	Focus                 *int     `bson:"focus,omitempty" json:"focus,omitempty"`
+	MedicationAdherence   *bool    `bson:"medication_adherence,omitempty" json:"medication_adherence,omitempty"`
+	MedicationNotes       string   `bson:"medication_notes,omitempty" json:"medication_notes,omitempty"`
+	ScreenTime            *float64 `bson:"screen_time,omitempty" json:"screen_time,omitempty"`
+	WaterIntake           *int     `bson:"water_intake,omitempty" json:"water_intake,omitempty"`
+	FoodIntake            string   `bson:"food_intake,omitempty" json:"food_intake,omitempty"`
 }
 
 type WellnessEntry struct {

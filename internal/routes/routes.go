@@ -154,6 +154,7 @@ func SetupRoutes(r *chi.Mux) {
 		r.Get("/notes/search", handlers.SearchSessionNotesV2)
 
 		// P1: Wellness (therapist view)
+		r.Get("/patients/wellness", handlers.ListAllPatientsWellnessV2)
 		r.Get("/patients/{patientId}/wellness", handlers.ListPatientWellnessV2)
 		r.Get("/patients/{patientId}/wellness/trends", handlers.WellnessTrendsV2)
 

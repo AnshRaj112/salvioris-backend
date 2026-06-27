@@ -226,3 +226,26 @@ func computeWellnessTrends(entries []models.WellnessEntry, days int) map[string]
 		"risk_indicators":  risk,
 	}
 }
+
+func ListAllPatientsWellnessV2(w http.ResponseWriter, r *http.Request) {
+	tenantID, _ := middleware.TenantIDFromCtx(r.Context())
+	from, to := parseDateRange(r)
+	ctx, cancel := mongoCtx()
+	defer cancel()
+
+	filter := bson.M{
+		"tenant_id":  tenantID.String(),
+		"entry_date": bson.M{"$gte": from, "$lte": to},
+	}
+	cursor, err := database.DB.Collection("wellness_entries").Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "entry_date", Value: -1}}))
+	if err != nil {
+		http.Error(w, "Failed to list wellness entries", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var entries []models.WellnessEntry
+	_ = cursor.All(ctx, &entries)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"data": entries})
+}
