@@ -196,7 +196,25 @@ func RefreshAccessToken(refreshRaw string) (*TokenPair, error) {
 		return nil, errors.New("refresh token expired")
 	}
 
-	return IssueTherapistTokens(userID, tenantID)
+	// Check if the user is a therapist
+	var isTherapist bool
+	err = database.PostgresDB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM therapists WHERE id = $1)
+	`, userID).Scan(&isTherapist)
+	if err == nil && isTherapist {
+		return IssueTherapistTokens(userID, tenantID)
+	}
+
+	// Check if the user is a receptionist
+	var isReceptionist bool
+	err = database.PostgresDB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM receptionists WHERE id = $1)
+	`, userID).Scan(&isReceptionist)
+	if err == nil && isReceptionist {
+		return IssueReceptionistTokens(userID, tenantID)
+	}
+
+	return nil, errors.New("user not found or inactive")
 }
 
 func newRefreshToken() (string, error) {

@@ -408,7 +408,7 @@ func InitPostgresTables() error {
 
 		`CREATE TABLE IF NOT EXISTS refresh_tokens (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			user_id UUID NOT NULL REFERENCES therapists(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL,
 			token_hash VARCHAR(64) NOT NULL UNIQUE,
 			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
 			expires_at TIMESTAMP NOT NULL,
@@ -654,6 +654,9 @@ func InitPostgresTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_receptionists_tenant ON receptionists(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_receptionists_email ON receptionists(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_receptionists_therapist ON receptionists(therapist_id)`,
+
+		// Drop foreign key constraint on refresh_tokens.user_id to support multiple roles
+		`ALTER TABLE refresh_tokens DROP CONSTRAINT IF EXISTS refresh_tokens_user_id_fkey`,
 	}
 
 	for _, query := range queries {

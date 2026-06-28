@@ -225,6 +225,12 @@ func SetupRoutes(r *chi.Mux) {
 		r.Get("/patients/{patientId}/ai/progress", handlers.AIPatientProgressV2)
 		r.Get("/patients/{patientId}/ai/mood-analysis", handlers.AIMoodAnalysisV2)
 		r.Get("/ai/risk-alerts", handlers.AIRiskAlertsV2)
+
+		// ── Therapist-managed Receptionist Staff ────────────────
+		r.Post("/receptionists", handlers.TherapistCreateReceptionist)
+		r.Get("/receptionists", handlers.TherapistListReceptionists)
+		r.Delete("/receptionists/{receptionistId}", handlers.TherapistDeactivateReceptionist)
+		r.Patch("/receptionists/{receptionistId}/reactivate", handlers.TherapistReactivateReceptionist)
 	})
 
 	// P2: Google OAuth callback (no tenant prefix)
@@ -265,14 +271,7 @@ func SetupRoutes(r *chi.Mux) {
 	r.Post("/api/auth/receptionist/signin", handlers.ReceptionistSignin)
 	r.Post("/api/auth/receptionist/signout", handlers.ReceptionistSignout)
 
-	// ── Therapist-managed Receptionist Staff (under TenantAuth) ────────────────
-	r.Route("/api/v1/tenant/{tenantId}", func(r chi.Router) {
-		r.Use(middleware.TenantAuth)
-		r.Post("/receptionists", handlers.TherapistCreateReceptionist)
-		r.Get("/receptionists", handlers.TherapistListReceptionists)
-		r.Delete("/receptionists/{receptionistId}", handlers.TherapistDeactivateReceptionist)
-		r.Patch("/receptionists/{receptionistId}/reactivate", handlers.TherapistReactivateReceptionist)
-	})
+
 
 	// ── Reception Portal (all endpoints under ReceptionistAuth) ────────────────
 	r.Route("/api/v1/reception/{tenantId}", func(r chi.Router) {
