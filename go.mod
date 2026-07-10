@@ -12,7 +12,7 @@ require (
 	github.com/lib/pq v1.11.1
 	github.com/redis/go-redis/v9 v9.5.5
 	go.mongodb.org/mongo-driver v1.17.7
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.283.0
